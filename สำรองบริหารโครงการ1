@@ -1,0 +1,242 @@
+// src/pages/ConstructionPage.jsx
+import React, { useState, useMemo } from 'react';
+import { supabase } from '../supabaseClient';
+import { 
+  HardHat, MapPin, Calendar, Activity, AlertTriangle, 
+  ArrowRight, Hammer, Truck, X, Save, Plus, User, Camera // 🟢 Camera Icon
+} from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell } from 'recharts';
+
+// 🟢 Import AI Camera ที่แยกไฟล์ไปแล้ว
+import AICameraModal from '../components/AICameraModal';
+
+// Leaflet Setup
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow, iconSize: [25, 41], iconAnchor: [12, 41] });
+L.Marker.prototype.options.icon = DefaultIcon;
+
+// --- COMPONENTS ---
+
+// 🟢 1. Real Map
+const RealMap = ({ projects }) => {
+    const defaultCenter = [13.7563, 100.5018]; 
+    const firstProjectWithLocation = projects.find(p => p.lat && p.lng);
+    const center = firstProjectWithLocation ? [firstProjectWithLocation.lat, firstProjectWithLocation.lng] : defaultCenter;
+
+    return (
+        <div className="h-[250px] w-full rounded-3xl overflow-hidden shadow-sm border border-gray-100 dark:border-slate-700 z-0 relative">
+            <MapContainer center={center} zoom={10} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
+                <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                {projects.map((proj) => (
+                    (proj.lat && proj.lng) && (
+                        <Marker key={proj.id} position={[proj.lat, proj.lng]}>
+                            <Popup>
+                                <div className="text-xs">
+                                    <strong className="block text-sm mb-1">{proj.name}</strong>
+                                    <p>Progress: {proj.actualPercent}%</p>
+                                    <p>ผู้รับเหมา: {proj.contractor}</p>
+                                </div>
+                            </Popup>
+                        </Marker>
+                    )
+                ))}
+            </MapContainer>
+        </div>
+    );
+};
+
+// 🟢 2. Update Progress Modal
+const UpdateProgressModal = ({ project, onClose, onSave }) => {
+    const [progress, setProgress] = useState(project.actualPercent || 0);
+    const [note, setNote] = useState('');
+    const [saving, setSaving] = useState(false);
+    const handleSave = async () => {
+        setSaving(true);
+        await onSave(project.id, parseFloat(progress), note);
+        setSaving(false);
+        onClose();
+    };
+    return (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                <div className="p-4 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-orange-50 dark:bg-slate-700/50">
+                    <h3 className="font-bold text-gray-800 dark:text-white flex items-center gap-2"><Hammer size={18} className="text-orange-600"/> อัปเดตหน้างาน</h3>
+                    <button onClick={onClose}><X size={20} className="text-gray-400"/></button>
+                </div>
+                <div className="p-6 space-y-4">
+                    <div><label className="text-xs font-bold text-gray-500 block mb-2">ชื่อโครงการ</label><div className="text-sm font-bold text-gray-800 dark:text-white bg-gray-50 dark:bg-slate-700 p-3 rounded-lg border border-gray-200 dark:border-slate-600">{project.name}</div></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-2 flex justify-between"><span>ความคืบหน้าสะสม (%)</span><span className="text-orange-600">{progress}%</span></label><input type="range" min="0" max="100" step="1" value={progress} onChange={(e) => setProgress(e.target.value)} className="w-full accent-orange-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/><div className="flex justify-between text-[10px] text-gray-400 mt-1"><span>0%</span><span>50%</span><span>100%</span></div></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-2">หมายเหตุ / ปัญหา (Optional)</label><textarea rows="2" className="w-full border border-gray-300 dark:border-slate-600 rounded-lg p-2 text-sm bg-white dark:bg-slate-700 dark:text-white focus:ring-2 focus:ring-orange-500 outline-none" placeholder="เช่น ฝนตกหนัก, วัสดุเข้าช้า..." value={note} onChange={(e) => setNote(e.target.value)}></textarea></div>
+                </div>
+                <div className="p-4 border-t border-gray-100 dark:border-slate-700 flex gap-2"><button onClick={onClose} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg text-sm font-bold transition-colors">ยกเลิก</button><button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-orange-200 dark:shadow-none flex items-center justify-center gap-2">{saving ? 'บันทึก...' : <><Save size={16}/> บันทึกผล</>}</button></div>
+            </div>
+        </div>
+    );
+};
+
+// 🟢 3. Construction Card
+const ConstructionCard = ({ project, contractor, contractCode, onUpdateClick, onCameraClick }) => {
+  const plan = project.planPercent || 0;
+  const actual = project.actualPercent || 0;
+  const isDelay = actual < (plan - 5);
+  
+  return (
+    <div className="bg-white dark:bg-slate-800 p-5 rounded-3xl border border-gray-100 dark:border-slate-700 shadow-sm hover:shadow-md transition-all group flex flex-col h-full">
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex items-center gap-3 overflow-hidden">
+          <div className="w-10 h-10 shrink-0 rounded-2xl bg-orange-50 dark:bg-orange-900/20 text-orange-600 flex items-center justify-center shadow-sm">
+            <HardHat size={20} strokeWidth={2.5}/>
+          </div>
+          <div className="min-w-0">
+            <h4 className="font-bold text-gray-800 dark:text-white truncate" title={project.name}>{project.name}</h4>
+            <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
+              <span className="bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded font-mono">{contractCode}</span>
+              <span className="truncate flex items-center gap-1"><MapPin size={10}/> {project.location || 'Site Loc'}</span>
+            </div>
+          </div>
+        </div>
+        <span className={`shrink-0 flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full border ${isDelay ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+            {isDelay ? <AlertTriangle size={10}/> : <Activity size={10}/>} {isDelay ? 'Delay' : 'On Plan'}
+        </span>
+      </div>
+      <div className="mb-4 text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-slate-700/50 p-2.5 rounded-xl flex items-center gap-2">
+        <Truck size={14} className="text-gray-400"/>
+        <div className="truncate"><span className="font-semibold text-gray-700 dark:text-gray-300">ผรม: </span>{contractor || 'Waiting...'}</div>
+      </div>
+      <div className="mt-auto">
+        <div className="flex justify-between text-xs mb-1.5 font-medium"><span className="text-gray-500">Progress</span><span className={`font-bold ${isDelay ? 'text-red-500' : 'text-orange-600'}`}>{actual}%</span></div>
+        <div className="relative h-2.5 w-full bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
+            <div className="absolute top-0 left-0 h-full bg-gray-300 dark:bg-slate-600 opacity-50" style={{ width: `${Math.min(plan, 100)}%` }}></div>
+            <div className={`absolute top-0 left-0 h-full rounded-full transition-all duration-1000 shadow-sm ${isDelay ? 'bg-red-500' : 'bg-orange-500'}`} style={{ width: `${Math.min(actual, 100)}%` }}></div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-4">
+          <button onClick={() => onUpdateClick(project)} className="flex-1 py-2 text-xs font-bold text-gray-500 hover:text-orange-600 border border-dashed border-gray-200 dark:border-slate-600 rounded-xl hover:bg-orange-50 dark:hover:bg-orange-900/10 transition-colors flex items-center justify-center gap-1">
+            <Save size={12}/> Update
+          </button>
+          <button onClick={() => onCameraClick(project)} className="flex-1 py-2 text-xs font-bold text-white bg-slate-800 hover:bg-black dark:bg-slate-600 dark:hover:bg-slate-500 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-1">
+            <Camera size={12}/> AI View
+          </button>
+      </div>
+    </div>
+  );
+};
+
+// 🟢 4. Overview Chart
+const ConstructionOverview = ({ projects }) => {
+    const activeCount = projects.length;
+    const delayCount = projects.filter(p => (p.actualPercent || 0) < (p.planPercent || 0) - 5).length;
+    const data = [{ name: 'On Plan', val: activeCount - delayCount, color: '#10b981' }, { name: 'Delay', val: delayCount, color: '#ef4444' }];
+    return (
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl border border-gray-100 dark:border-slate-700 shadow-sm h-[250px] flex flex-col">
+            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2 text-sm"><Activity size={18} className="text-orange-500"/> ภาพรวมหน้างาน (Site Overview)</h3>
+            <div className="flex gap-6 h-full items-center">
+                <div className="flex flex-col justify-center gap-6 min-w-[120px]">
+                    <div><p className="text-xs text-gray-400 font-bold uppercase mb-1">Active Sites</p><div className="flex items-baseline gap-2"><span className="text-4xl font-black text-slate-800 dark:text-white">{activeCount}</span><span className="text-xs text-gray-400">Projects</span></div></div>
+                    <div><p className="text-xs text-gray-400 font-bold uppercase mb-1">Critical Delay</p><div className="flex items-baseline gap-2"><span className="text-4xl font-black text-red-500">{delayCount}</span><span className="text-xs text-red-400">Projects</span></div></div>
+                </div>
+                <div className="flex-1 h-[160px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={data} layout="horizontal" margin={{top: 20}}>
+                            <XAxis dataKey="name" type="category" tick={{fontSize: 10}} axisLine={false} tickLine={false}/><YAxis type="number" hide /><Tooltip cursor={{fill: 'transparent'}} contentStyle={{borderRadius: '8px'}}/><Bar dataKey="val" radius={[8, 8, 0, 0]} barSize={40}>{data.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}</Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// 🟢 5. Site Visit Modal (Placeholder - ใช้ตัวจริงจากก่อนหน้านี้ได้)
+const SiteVisitModal = ({ onClose, projects }) => {
+    return null; 
+};
+
+// --- MAIN PAGE ---
+const ConstructionPage = ({ biddingData = [], allProjects = [], onRefresh }) => {
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [cameraProject, setCameraProject] = useState(null);
+  const [showVisitModal, setShowVisitModal] = useState(false);
+
+  const constructionProjects = useMemo(() => {
+      if (!allProjects.length) return [];
+      const activePackageMap = {}; 
+      biddingData.forEach(pkg => {
+          if (pkg.currentStep >= 10) {
+              activePackageMap[pkg.id] = { contractor: pkg.result?.winner || 'TBD', code: pkg.code };
+          }
+      });
+      return allProjects
+          .filter(p => p.bidding_package_id && activePackageMap[p.bidding_package_id])
+          .map(p => ({
+              ...p,
+              contractor: activePackageMap[p.bidding_package_id].contractor,
+              contractCode: activePackageMap[p.bidding_package_id].code,
+              planPercent: p.planPercent || 0,
+              actualPercent: p.actualPercent || 0,
+              lat: p.lat ? parseFloat(p.lat) : null,
+              lng: p.lng ? parseFloat(p.lng) : null
+          }));
+  }, [biddingData, allProjects]);
+
+  const handleUpdateProgress = async (projectId, newPercent, note) => {
+      try {
+          // 1. Update Projects (Optional)
+          // const { error: projError } = await supabase.from('projects').update({ actual_percent: newPercent }).eq('id', projectId);
+          
+          // 2. Upsert Project Progress
+          const { error: progressError } = await supabase.from('project_progress').upsert({ 
+              project_id: projectId,
+              percent_actual: parseFloat(newPercent),
+              updated_at: new Date()
+          }, { onConflict: 'project_id' });
+
+          if (progressError) throw progressError;
+          onRefresh();
+      } catch (error) { console.error("Error updating:", error); alert("บันทึกไม่สำเร็จ: " + error.message); }
+  };
+
+  return (
+    <div className="space-y-6 pb-10 animate-fade-in">
+      <div className="flex justify-between items-center">
+        <div><h2 className="text-xl font-black text-gray-800 dark:text-white flex items-center gap-2"><HardHat className="text-orange-600"/> Construction Management</h2><p className="text-xs text-gray-400 mt-1">บริหารจัดการงานก่อสร้างและติดตามความก้าวหน้า</p></div>
+        <div className="flex gap-2"><button onClick={() => setShowVisitModal(true)} className="bg-white border border-gray-200 text-gray-600 px-3 py-2 rounded-xl text-xs font-bold hover:bg-gray-50 shadow-sm flex items-center gap-2"><Calendar size={14}/> Site Visit Schedule</button></div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+         <ConstructionOverview projects={constructionProjects} />
+         <RealMap projects={constructionProjects} />
+      </div>
+
+      <div>
+        <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2"><Hammer size={16}/> โครงการที่กำลังก่อสร้าง ({constructionProjects.length})</h3>
+        {constructionProjects.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {constructionProjects.map((proj) => (
+                    <ConstructionCard 
+                        key={proj.id} project={proj} contractor={proj.contractor} contractCode={proj.contractCode}
+                        onUpdateClick={setSelectedProject}
+                        onCameraClick={setCameraProject}
+                    />
+                ))}
+            </div>
+        ) : (
+            <div className="p-12 text-center border-2 border-dashed border-gray-200 dark:border-slate-700 rounded-3xl bg-gray-50 dark:bg-slate-800/50 text-gray-400"><HardHat size={48} className="mx-auto mb-3 opacity-20"/><p>ยังไม่มีโครงการเข้าสู่ระยะก่อสร้าง</p></div>
+        )}
+      </div>
+
+      {selectedProject && <UpdateProgressModal project={selectedProject} onClose={() => setSelectedProject(null)} onSave={handleUpdateProgress} />}
+      
+      {/* 🟢 เรียกใช้ AI Camera Modal ที่ Import มา */}
+      {cameraProject && <AICameraModal project={cameraProject} onClose={() => setCameraProject(null)} />}
+      
+      {/* (SiteVisitModal ถ้าจะใช้ ให้ใส่ตรงนี้) */}
+    </div>
+  );
+};
+
+export default ConstructionPage;

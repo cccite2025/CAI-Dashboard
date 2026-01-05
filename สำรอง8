@@ -1,0 +1,773 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { supabase } from './supabaseClient';
+import {
+  LayoutDashboard, FileText, CheckCircle, Clock, TrendingUp, Bell, Settings, LogOut, Briefcase,
+  MoreVertical, ChevronRight, PenTool, AlertCircle, Check, Hourglass, ArrowUpDown, ArrowUp, ArrowDown, Filter, User, Calendar, 
+  Upload, Info, ChevronLeft, Search, Coins, XCircle, PauseCircle, PlayCircle, HardHat, MapPin, Lock, Edit3,
+  Trophy, Crown, Sparkles // <--- เพิ่มไอคอนรางวัล
+} from 'lucide-react';
+import {
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend
+} from 'recharts';
+import projectsData from './projects_data.json'; 
+
+// ==========================================
+// CONFIG & CONSTANTS
+// ==========================================
+const BU_CONFIG = {
+  'SW': { icon: '🐷', color: 'bg-pink-100 text-pink-600', label: 'สุกร (Swine)' },
+  'BR': { icon: '🐔', color: 'bg-orange-100 text-orange-600', label: 'ไก่เนื้อ (Broiler)' },
+  'LA': { icon: '🥚', color: 'bg-yellow-100 text-yellow-600', label: 'ไก่ไข่ (Layer)' },
+  'FE': { icon: '🌽', color: 'bg-emerald-100 text-emerald-600', label: 'อาหารสัตว์ (Feed)' },
+  'FO': { icon: '🍱', color: 'bg-purple-100 text-purple-600', label: 'อาหารสำเร็จ (Food)' },
+  'AQ': { icon: '🦐', color: 'bg-cyan-100 text-cyan-600', label: 'สัตว์น้ำ (Aqua)' },
+  'OT': { icon: '🏭', color: 'bg-gray-100 text-gray-600', label: 'อื่นๆ (Others)' },
+  'default': { icon: '❓', color: 'bg-gray-200 text-gray-500', label: 'Unknown' }
+};
+
+const WEIGHTS_BY_ORDER = { 1: 0, 2: 10, 3: 10, 4: 40, 5: 15, 6: 15, 7: 10 };
+const REVENUE_FACTOR = 0.011; // 1.1%
+
+// ==========================================
+// LOGIC
+// ==========================================
+const calculateProjectStatus = (progressData, steps, projectStatus) => {
+  if (projectStatus === 'Cancelled') {
+    return { actualPercent: 0, planPercent: 0, status: 'Cancelled', delayDays: 0, startDate: '-', endDate: '-' };
+  }
+
+  const startDate = progressData?.plan_start_date ? new Date(progressData.plan_start_date) : null;
+  const endDate = progressData?.plan_end_date ? new Date(progressData.plan_end_date) : null;
+  const actualFinishDate = progressData?.actual_finish_date ? new Date(progressData.actual_finish_date) : null;
+  const today = new Date();
+
+  let actualPercent = 0;
+  if (steps && steps.length > 0) {
+    steps.forEach(step => {
+      if (step.status === 'completed') actualPercent += WEIGHTS_BY_ORDER[step.step_order] || 0;
+    });
+  }
+  actualPercent = Math.min(100, Math.round(actualPercent));
+
+  let planPercent = 0;
+  if (startDate && endDate) {
+    const totalDuration = endDate - startDate;
+    const compareDate = today; 
+    const elapsed = compareDate - startDate;
+    if (totalDuration > 0) planPercent = (elapsed / totalDuration) * 100;
+    planPercent = Math.max(0, Math.min(100, Math.round(planPercent)));
+  }
+
+  let status = 'On Plan';
+  if (planPercent - actualPercent > 5) status = 'Delay';
+  if (actualPercent >= 100) status = 'Completed';
+  if (projectStatus === 'Hold') status = 'Hold';
+
+  let delayDays = 0;
+  if (endDate && projectStatus !== 'Hold') {
+    if (status === 'Completed') {
+        if (actualFinishDate && actualFinishDate > endDate) {
+            const diffTime = Math.abs(actualFinishDate - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        } else if (!actualFinishDate && today > endDate) {
+            const diffTime = Math.abs(today - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+    } else {
+        if (today > endDate) {
+            const diffTime = Math.abs(today - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+    }
+  }
+
+  return {
+    actualPercent, planPercent, status, delayDays,
+    startDate: startDate ? startDate.toISOString().split('T')[0] : '-',
+    endDate: endDate ? endDate.toISOString().split('T')[0] : '-'
+  };
+};
+
+const convertDate = (dateStr) => {
+  if (!dateStr || dateStr === '-') return null;
+  try {
+    const parts = dateStr.split('/');
+    if (parts.length !== 3) return null;
+    const [day, month, year] = parts;
+    return `${year.length === 2 ? '20'+year : year}-${month.length === 1 ? '0'+month : month}-${day.length === 1 ? '0'+day : day}`;
+  } catch (e) { return null; }
+};
+
+// ==========================================
+// ✨ PREMIUM DASHBOARD CARDS ✨
+// ==========================================
+
+const UserAvatar = ({ name, size = "md" }) => {
+  const sizeClasses = { sm: "w-6 h-6 text-[10px]", md: "w-8 h-8 text-xs", lg: "w-10 h-10 text-sm" };
+  return (
+    <div className={`${sizeClasses[size]} rounded-full bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600 flex items-center justify-center font-bold border border-blue-100 shadow-sm shrink-0 select-none ring-2 ring-white`} title={name}>
+      {name ? name.charAt(0) : '?'}
+    </div>
+  );
+};
+
+// 1. Project Health Card (Clean & Modern)
+const ProjectHealthCard = ({ projects }) => {
+  const activeProjects = projects.filter(p => p.project_status !== 'Cancelled');
+  const total = projects.length;
+  const onPlan = activeProjects.filter(p => p.status === 'On Plan').length;
+  const delayed = activeProjects.filter(p => p.status === 'Delay').length;
+  const completed = projects.filter(p => p.status === 'Completed').length;
+  const hold = projects.filter(p => p.project_status === 'Hold').length;
+
+  return (
+    <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 relative overflow-hidden group">
+      <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
+        <Briefcase size={100} className="text-gray-900" />
+      </div>
+      
+      <div className="flex justify-between items-start mb-6 relative z-10">
+        <div>
+          <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Total Projects</h3>
+          <span className="text-5xl font-extrabold text-gray-800 tracking-tight">{total}</span>
+        </div>
+        <div className="p-3 bg-gray-50 rounded-2xl text-gray-600">
+          <Briefcase size={24} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 relative z-10">
+        <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 flex flex-col">
+           <span className="text-emerald-600 text-xs font-bold flex items-center gap-1"><CheckCircle size={12}/> On Plan</span>
+           <span className="text-2xl font-bold text-emerald-700">{onPlan}</span>
+        </div>
+        <div className="bg-red-50 p-3 rounded-xl border border-red-100 flex flex-col">
+           <span className="text-red-600 text-xs font-bold flex items-center gap-1"><AlertCircle size={12}/> Delay</span>
+           <span className="text-2xl font-bold text-red-700">{delayed}</span>
+        </div>
+        <div className="bg-purple-50 p-3 rounded-xl border border-purple-100 flex flex-col">
+           <span className="text-purple-600 text-xs font-bold flex items-center gap-1"><Check size={12}/> Done</span>
+           <span className="text-2xl font-bold text-purple-700">{completed}</span>
+        </div>
+        <div className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex flex-col">
+           <span className="text-orange-600 text-xs font-bold flex items-center gap-1"><PauseCircle size={12}/> Hold</span>
+           <span className="text-2xl font-bold text-orange-700">{hold}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 2. Financial Overview Card (The "Hero" Card - Dark Mode)
+const FinancialOverviewCard = ({ totalBudget, totalForecastRevenue, actualRevenue }) => {
+  const achievementPercent = totalForecastRevenue > 0 ? (actualRevenue / totalForecastRevenue) * 100 : 0;
+
+  return (
+    <div className="bg-gradient-to-br from-[#0f172a] to-[#1e293b] p-6 rounded-3xl shadow-xl shadow-slate-200 hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 text-white relative overflow-hidden group">
+      {/* Decor */}
+      <div className="absolute -right-10 -top-10 w-40 h-40 bg-emerald-500 rounded-full blur-[60px] opacity-20 group-hover:opacity-30 transition-opacity"></div>
+      
+      <div className="relative z-10 flex flex-col h-full justify-between">
+        <div className="flex justify-between items-start">
+           <div>
+              <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Coins size={14}/> Revenue (Earned)</h3>
+              <div className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 to-teal-200">
+                 ฿{(actualRevenue / 1000000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M
+              </div>
+              <p className="text-slate-400 text-xs mt-1">Total Budget: ฿{(totalBudget / 1000000).toLocaleString(undefined, { maximumFractionDigits: 1 })}M</p>
+           </div>
+           <div className="p-3 bg-white/10 backdrop-blur-sm rounded-2xl text-emerald-300">
+              <TrendingUp size={24} />
+           </div>
+        </div>
+
+        <div className="mt-6">
+          <div className="flex justify-between items-end mb-2">
+             <span className="text-xs font-medium text-slate-300">Target: ฿{(totalForecastRevenue / 1000000).toFixed(2)}M</span>
+             <span className="text-2xl font-bold text-white">{achievementPercent.toFixed(1)}%</span>
+          </div>
+          <div className="w-full bg-slate-700/50 rounded-full h-3 backdrop-blur-sm overflow-hidden border border-white/10">
+             <div 
+               className="bg-gradient-to-r from-emerald-400 to-teal-400 h-3 rounded-full transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(52,211,153,0.5)]" 
+               style={{ width: `${Math.min(100, achievementPercent)}%` }}
+             ></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 3. BU Mix Card (Elegant Donut)
+const BUMixCard = ({ buData }) => {
+  const COLORS = ['#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#3B82F6', '#6366F1'];
+  const totalRevenue = buData.reduce((sum, val) => sum + val.value, 0);
+
+  return (
+    <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col relative overflow-hidden">
+       <div className="flex items-center gap-2 mb-4 relative z-10">
+         <div className="p-2 bg-purple-50 text-purple-600 rounded-lg"><PieChart size={18}/></div>
+         <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wider">Revenue by BU</h3>
+       </div>
+
+       <div className="flex-1 flex items-center gap-4">
+          <div className="w-[120px] h-[120px] relative">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={buData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={40}
+                  outerRadius={55}
+                  paddingAngle={4}
+                  cornerRadius={4}
+                  stroke="none"
+                >
+                  {buData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            {/* Center Text */}
+            <div className="absolute inset-0 flex items-center justify-center flex-col pointer-events-none">
+               <span className="text-xs text-gray-400">Top</span>
+               <span className="text-lg font-bold text-gray-700">{buData.length}</span>
+            </div>
+          </div>
+
+          <div className="flex-1 flex flex-col gap-2 text-xs overflow-y-auto max-h-[130px] custom-scrollbar pr-1">
+            {buData.map((entry, index) => (
+              <div key={entry.name} className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }}></span>
+                  <span className="text-gray-600 font-medium">{entry.name}</span>
+                </div>
+                <span className="font-bold text-gray-800 bg-gray-50 px-1.5 py-0.5 rounded">
+                  {totalRevenue > 0 ? (entry.value / totalRevenue * 100).toFixed(0) : 0}%
+                </span>
+              </div>
+            ))}
+          </div>
+       </div>
+    </div>
+  );
+};
+
+// 4. Team Revenue Card (Leaderboard Style)
+const TeamRevenueCard = ({ teamData }) => {
+  const top5 = teamData.slice(0, 5);
+  const maxRevenue = top5.length > 0 ? top5[0].revenue : 1;
+
+  return (
+    <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col relative overflow-hidden">
+       <div className="flex items-center gap-2 mb-4">
+         <div className="p-2 bg-yellow-50 text-yellow-600 rounded-lg"><Trophy size={18}/></div>
+         <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wider">Top Performers</h3>
+       </div>
+
+       <div className="flex-1 flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-1">
+         {top5.map((member, index) => (
+           <div key={member.name} className="group">
+             <div className="flex justify-between items-center mb-1">
+               <div className="flex items-center gap-3">
+                 {/* Rank Medal */}
+                 <div className={`w-5 h-5 flex items-center justify-center rounded-full text-[10px] font-bold
+                    ${index === 0 ? 'bg-yellow-100 text-yellow-700' : 
+                      index === 1 ? 'bg-gray-100 text-gray-600' : 
+                      index === 2 ? 'bg-orange-100 text-orange-700' : 'text-gray-400'}`}>
+                    {index + 1}
+                 </div>
+                 <div className="flex items-center gap-2">
+                    <UserAvatar name={member.name} size="sm" />
+                    <span className="text-xs font-semibold text-gray-700">{member.name}</span>
+                    {index === 0 && <Crown size={12} className="text-yellow-500 rotate-[-15deg]" />}
+                 </div>
+               </div>
+               <span className="text-xs font-bold text-emerald-600">฿{(member.revenue / 1000000).toFixed(1)}M</span>
+             </div>
+             
+             {/* Bar */}
+             <div className="w-full bg-gray-50 rounded-full h-1.5 overflow-hidden">
+               <div 
+                 className={`h-1.5 rounded-full transition-all duration-500 ${index === 0 ? 'bg-gradient-to-r from-yellow-400 to-orange-400' : 'bg-emerald-400'}`}
+                 style={{ width: `${(member.revenue / maxRevenue) * 100}%` }}
+               ></div>
+             </div>
+           </div>
+         ))}
+       </div>
+    </div>
+  );
+};
+
+// ==========================================
+// TABLE COMPONENTS & MODALS
+// ==========================================
+const SegmentedProgress = ({ plan, actual, status, delayDays, projectStatus }) => {
+  if (projectStatus === 'Cancelled') return <span className="text-xs text-gray-400 font-medium bg-gray-100 px-2 py-1 rounded-full whitespace-nowrap">ยกเลิก</span>;
+  if (projectStatus === 'Hold') return <span className="text-xs text-orange-500 font-medium bg-orange-100 px-2 py-1 rounded-full flex items-center gap-1 w-max mx-auto"><PauseCircle size={10}/> ชะลอ</span>;
+  const totalBars = 15; const activeBars = Math.round((actual / 100) * totalBars); const isDelayed = delayDays > 0 || status === 'Delay';
+  return (
+    <div className="w-[100px] flex flex-col gap-1">
+      <div className="flex justify-between items-end mb-0.5"><span className={`text-sm font-bold ${isDelayed ? 'text-red-600' : 'text-emerald-600'}`}>{actual}%</span><span className="text-[9px] text-gray-400 font-mono">{delayDays > 0 ? <span className="text-red-500 font-bold">{delayDays}d Late</span> : `P:${plan}%`}</span></div>
+      <div className="flex gap-[2px] h-2.5 items-end">{[...Array(totalBars)].map((_, index) => (<div key={index} className={`w-full rounded-[1px] transition-all duration-300 ${index < activeBars ? (isDelayed ? 'bg-red-500' : 'bg-emerald-500') + ' h-full' : 'bg-gray-100 h-full'}`}></div>))}</div>
+    </div>
+  );
+};
+
+const BUBadge = ({ buCode }) => {
+  const config = BU_CONFIG[buCode] || BU_CONFIG['default'];
+  return (
+    <div className={`flex items-center justify-center w-8 h-8 rounded-lg ${config.color} shadow-sm group relative text-lg cursor-help shrink-0`} >
+      {config.icon}
+      <div className="absolute bottom-full mb-2 hidden group-hover:block w-max max-w-[120px] text-center z-10 bg-gray-800 text-white text-xs p-2 rounded shadow-lg">{config.label}</div>
+    </div>
+  );
+};
+
+// NewProjectModal (Updated: Re-designed Layout, Organized Groups, Smart Inputs)
+const NewProjectModal = ({ onClose, onUpdate, existingLocations, existingOwners }) => {
+  const [saving, setSaving] = useState(false);
+  const [formData, setFormData] = useState({ project_code: '', name: '', location: '', budget: '', responsible_design: '', bu: 'SW', plan_start_date: '', plan_end_date: '' });
+  const handleChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleSelectBU = (buCode) => setFormData(prev => ({ ...prev, bu: buCode }));
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!formData.project_code || !formData.name || !formData.budget || !formData.plan_start_date || !formData.plan_end_date) { return alert('กรุณากรอกข้อมูลให้ครบถ้วน (รหัส, ชื่อ, งบ, วันที่)'); }
+    setSaving(true);
+    try {
+      const { data: projectData, error: projectError } = await supabase.from('projects').upsert([{ project_code: formData.project_code, name: formData.name, location: formData.location, budget: parseFloat(formData.budget), responsible_design: formData.responsible_design, bu: formData.bu }], { onConflict: 'project_code' }).select().single();
+      if (projectError) throw projectError;
+      const { error: progressError } = await supabase.from('project_progress').upsert({ project_id: projectData.id, plan_start_date: formData.plan_start_date, plan_end_date: formData.plan_end_date, performance_status: 'On Plan', percent_actual: 0 }, { onConflict: 'project_id' });
+      if (progressError) throw progressError;
+      onUpdate(); onClose();
+    } catch (error) { alert('Error: ' + error.message); } finally { setSaving(false); }
+  };
+
+  const labelStyle = "block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide";
+  const inputStyle = "w-full p-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all placeholder:text-gray-300";
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in p-4 font-sans">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="bg-white px-8 py-5 border-b border-gray-100 flex justify-between items-center shrink-0">
+          <div><h3 className="text-xl font-bold text-gray-800 flex items-center gap-2"><div className="p-2 bg-emerald-100 rounded-lg text-emerald-600"><Briefcase size={20} /></div>สร้างโครงการใหม่</h3><p className="text-sm text-gray-400 mt-1 ml-11">กรอกข้อมูลเพื่อเริ่มติดตามโครงการ</p></div><button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full text-gray-400 transition-colors">✕</button>
+        </div>
+        <div className="overflow-y-auto p-8 custom-scrollbar bg-gray-50/30">
+          <form id="createProjectForm" onSubmit={handleSave} className="space-y-8">
+            <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
+                <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2"><FileText size={14}/> ข้อมูลทั่วไป</div>
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
+                    <div className="md:col-span-4"><label className={labelStyle}>รหัสโครงการ <span className="text-red-500">*</span></label><div className="relative"><span className="absolute left-3 top-2.5 text-xs font-bold text-gray-400">ID</span><input type="text" name="project_code" value={formData.project_code} onChange={handleChange} className={`${inputStyle} pl-8 font-mono font-medium text-emerald-700`} placeholder="C-2501" required /></div></div>
+                    <div className="md:col-span-8"><label className={labelStyle}>ชื่อโครงการ <span className="text-red-500">*</span></label><input type="text" name="name" value={formData.name} onChange={handleChange} className={inputStyle} placeholder="ระบุชื่อโครงการ..." required /></div>
+                </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm"><div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2"><Coins size={14}/> งบประมาณ</div><label className={labelStyle}>Budget (THB) <span className="text-red-500">*</span></label><div className="relative"><span className="absolute left-3 top-2.5 text-gray-400">฿</span><input type="number" name="budget" value={formData.budget} onChange={handleChange} className={`${inputStyle} pl-8`} placeholder="0.00" required step="0.01" /></div></div>
+                <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm"><div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2"><MapPin size={14}/> สถานที่ตั้ง</div><label className={labelStyle}>Location</label><div className="relative"><MapPin className="absolute left-3 top-3 text-gray-400 pointer-events-none" size={16}/><input list="locations" type="text" name="location" value={formData.location} onChange={handleChange} className={`${inputStyle} pl-10`} placeholder="เลือกหรือพิมพ์เพิ่ม..." /><datalist id="locations">{existingLocations && existingLocations.map((loc, i) => <option key={i} value={loc} />)}</datalist></div></div>
+            </div>
+            <div className="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
+                <div className="text-xs font-bold text-blue-500 uppercase tracking-wider mb-3 flex items-center gap-2"><Clock size={14}/> ระยะเวลาตามแผน (Plan)</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div><label className="block text-xs font-semibold text-blue-700 mb-1.5">วันที่เริ่มสัญญา <span className="text-red-500">*</span></label><input type="date" name="plan_start_date" value={formData.plan_start_date} onChange={handleChange} className="w-full p-2.5 border border-blue-200 bg-white rounded-xl text-sm focus:border-blue-500 outline-none" required /></div>
+                    <div><label className="block text-xs font-semibold text-blue-700 mb-1.5">วันที่สิ้นสุดสัญญา <span className="text-red-500">*</span></label><input type="date" name="plan_end_date" value={formData.plan_end_date} onChange={handleChange} className="w-full p-2.5 border border-blue-200 bg-white rounded-xl text-sm focus:border-blue-500 outline-none" required /></div>
+                </div>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm space-y-5">
+                <div><div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2"><Settings size={14}/> ประเภทธุรกิจ (Business Unit)</div><div className="grid grid-cols-2 sm:grid-cols-4 gap-3">{Object.entries(BU_CONFIG).filter(([key]) => key !== 'default').map(([key, config]) => (<div key={key} onClick={() => handleSelectBU(key)} className={`cursor-pointer rounded-xl p-2 border transition-all flex flex-col items-center gap-1 text-center relative ${formData.bu === key ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-500 text-emerald-800' : 'border-gray-200 hover:border-emerald-300 hover:bg-white text-gray-500 bg-white'}`}><div className="text-xl">{config.icon}</div><span className="text-[10px] font-medium">{config.label.split(' ')[0]}</span>{formData.bu === key && <div className="absolute top-1 right-1 text-emerald-500"><CheckCircle size={12} fill="currentColor" className="text-white"/></div>}</div>))}</div></div>
+                <hr className="border-gray-100 border-dashed" />
+                <div><label className={labelStyle}>ผู้รับผิดชอบงานออกแบบ</label><div className="relative"><User className="absolute left-3 top-3 text-gray-400 pointer-events-none" size={16} /><input list="owners" type="text" name="responsible_design" value={formData.responsible_design} onChange={handleChange} className={`${inputStyle} pl-10`} placeholder="เลือกหรือพิมพ์เพิ่ม..." /><datalist id="owners">{existingOwners && existingOwners.map((own, i) => <option key={i} value={own} />)}</datalist></div></div>
+            </div>
+          </form>
+        </div>
+        <div className="px-8 py-5 bg-white border-t border-gray-100 flex justify-end gap-3 shrink-0"><button type="button" onClick={onClose} className="px-6 py-2.5 text-gray-600 hover:bg-gray-50 rounded-xl font-medium transition-colors border border-transparent hover:border-gray-200">ยกเลิก</button><button type="submit" form="createProjectForm" disabled={saving} className="px-8 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-200 font-medium disabled:opacity-70 flex items-center gap-2 transition-all transform active:scale-95">{saving ? 'กำลังบันทึก...' : 'สร้างโครงการ'}</button></div>
+      </div>
+    </div>
+  );
+};
+
+// ProjectEditModal (Updated)
+const ProjectEditModal = ({ project, onClose, onUpdate, existingLocations, existingOwners }) => {
+  const [steps, setSteps] = useState([]);
+  const [projectStatus, setProjectStatus] = useState(project.project_status || 'Active');
+  const [cancelReason, setCancelReason] = useState(project.cancel_reason || '');
+  const [saving, setSaving] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [projDetails, setProjDetails] = useState({ name: project.name, location: project.location, budget: project.budget, responsible_design: project.owner });
+
+  useEffect(() => { 
+    if (project?.pipeline_steps) setSteps([...project.pipeline_steps].sort((a, b) => a.step_order - b.step_order)); 
+  }, [project]);
+
+  const handleStatusChange = (id, newStatus) => {
+    setSteps(prev => prev.map(s => {
+      if (s.id === id) {
+        const today = new Date().toISOString().split('T')[0];
+        const updates = { status: newStatus };
+        if (newStatus === 'completed' && !s.actual_end_date) updates.actual_end_date = today;
+        if (newStatus === 'current' && !s.actual_start_date) updates.actual_start_date = today;
+        return { ...s, ...updates };
+      }
+      return s;
+    }));
+  };
+  const handleDateChange = (id, field, value) => setSteps(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
+  const toggleEditMode = () => { if (!editMode) { const pin = prompt("กรุณากรอกรหัสผ่านเพื่อแก้ไขรายละเอียด:"); if (pin === '1111') setEditMode(true); else if (pin !== null) alert("รหัสผ่านไม่ถูกต้อง"); } else { setEditMode(false); } };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const { error: projError } = await supabase.from('projects').update({ project_status: projectStatus, cancel_reason: projectStatus === 'Cancelled' ? cancelReason : null, name: projDetails.name, location: projDetails.location, budget: parseFloat(projDetails.budget), responsible_design: projDetails.responsible_design }).eq('id', project.id);
+      if (projError) throw projError;
+      if (projectStatus !== 'Cancelled') {
+        const { error } = await supabase.from('design_pipeline_steps').upsert(steps.map(s => ({ ...s, project_id: project.id })));
+        if (error) throw error;
+        let currentActual = 0;
+        steps.forEach(s => { if (s.status === 'completed') currentActual += WEIGHTS_BY_ORDER[s.step_order] || 0; });
+        currentActual = Math.min(100, Math.round(currentActual));
+        const updatePayload = { percent_actual: currentActual };
+        const step7 = steps.find(s => s.step_order === 7);
+        if (step7 && step7.actual_end_date) { updatePayload.actual_finish_date = step7.actual_end_date; if (step7.status === 'completed') updatePayload.performance_status = 'Completed'; } 
+        else if (currentActual >= 100) { updatePayload.actual_finish_date = new Date().toISOString(); updatePayload.performance_status = 'Completed'; } 
+        else { updatePayload.actual_finish_date = null; updatePayload.performance_status = 'In Progress'; }
+        await supabase.from('project_progress').update(updatePayload).eq('project_id', project.id);
+      }
+      onUpdate(); onClose();
+    } catch (error) { alert('Error: ' + error.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="bg-gray-50 px-6 py-4 border-b flex justify-between items-start">
+          <div className="flex-1 mr-4">
+            <div className="flex items-center gap-2 mb-1"><h3 className="font-bold text-gray-800">รายละเอียดโครงการ</h3><button onClick={toggleEditMode} className={`p-1.5 rounded-full transition-colors ${editMode ? 'text-emerald-600 bg-emerald-100' : 'text-gray-400 hover:bg-gray-200'}`} title="แก้ไขรายละเอียด"><Edit3 size={14}/></button></div>
+            {editMode ? (
+                <div className="space-y-2 mt-2 animate-fade-in p-2 bg-white rounded border border-emerald-200 shadow-sm">
+                    <input type="text" value={projDetails.name} onChange={e => setProjDetails({...projDetails, name: e.target.value})} className="w-full text-sm border rounded p-1.5 focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="ชื่อโครงการ" />
+                    <div className="flex gap-2">
+                        <input list="edit-locations" value={projDetails.location} onChange={e => setProjDetails({...projDetails, location: e.target.value})} className="w-1/2 text-xs border rounded p-1.5" placeholder="สถานที่" />
+                        <datalist id="edit-locations">{existingLocations?.map((loc, i) => <option key={i} value={loc} />)}</datalist>
+                        <input type="number" value={projDetails.budget} onChange={e => setProjDetails({...projDetails, budget: e.target.value})} className="w-1/4 text-xs border rounded p-1.5" placeholder="งบ" />
+                        <input list="edit-owners" value={projDetails.responsible_design} onChange={e => setProjDetails({...projDetails, responsible_design: e.target.value})} className="w-1/4 text-xs border rounded p-1.5" placeholder="ผู้รับผิดชอบ" />
+                        <datalist id="edit-owners">{existingOwners?.map((own, i) => <option key={i} value={own} />)}</datalist>
+                    </div>
+                </div>
+            ) : (
+                <div className="flex flex-col gap-0.5 mt-1"><span className="text-sm font-semibold text-emerald-600 line-clamp-1">{project.name}</span><div className="flex gap-3 text-xs text-gray-500"><span className="flex items-center gap-1"><MapPin size={10}/> {project.location || '-'}</span><span className="flex items-center gap-1"><User size={10}/> {project.owner || '-'}</span><span className="flex items-center gap-1"><Coins size={10}/> {(project.budget/1000000).toFixed(2)}M</span></div></div>
+            )}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div className="p-6 overflow-y-auto space-y-6">
+          <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
+             <label className="text-sm font-semibold text-gray-700">สถานะโครงการ</label>
+             <div className="grid grid-cols-3 gap-2">
+                <button onClick={() => setProjectStatus('Active')} className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Active' ? 'bg-emerald-100 text-emerald-700 border border-emerald-300 ring-1 ring-emerald-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}><PlayCircle size={16}/> ปกติ</button>
+                <button onClick={() => setProjectStatus('Hold')} className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Hold' ? 'bg-orange-100 text-orange-700 border border-orange-300 ring-1 ring-orange-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}><PauseCircle size={16}/> ชะลอ</button>
+                <button onClick={() => setProjectStatus('Cancelled')} className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Cancelled' ? 'bg-red-100 text-red-700 border border-red-300 ring-1 ring-red-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}><XCircle size={16}/> ยกเลิก</button>
+             </div>
+             {projectStatus === 'Cancelled' && (<div className="animate-fade-in mt-2"><label className="text-xs font-semibold text-red-600 mb-1 block">ระบุเหตุผลที่ยกเลิก *</label><textarea className="w-full p-3 border border-red-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none" rows="2" placeholder="เช่น เจ้าของระงับงบประมาณ..." value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}></textarea></div>)}
+          </div>
+          <hr className="border-gray-100" />
+          {projectStatus !== 'Cancelled' ? (
+            <div className="space-y-4">
+              <h4 className="text-sm font-semibold text-gray-700">ความคืบหน้างานออกแบบ</h4>
+              {steps.map(step => (
+                <div key={step.id} className="p-3 bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-colors">
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="flex gap-3 items-center">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${step.status === 'completed' ? 'bg-emerald-500 text-white' : step.status === 'current' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-500'}`}>{step.step_order}</div>
+                      <div className="flex flex-col"><span className="font-medium text-sm text-gray-700">{step.step_name}</span><span className="text-[10px] text-gray-400">Weight: {WEIGHTS_BY_ORDER[step.step_order]}%</span></div>
+                    </div>
+                    <select value={step.status} onChange={(e) => handleStatusChange(step.id, e.target.value)} className="text-sm border-none rounded p-1 font-medium cursor-pointer bg-gray-50 shadow-sm ring-1 ring-gray-200"><option value="pending">รอ</option><option value="current">กำลังทำ</option><option value="completed">เสร็จ</option></select>
+                  </div>
+                  {(step.step_order === 1 || step.step_order === 7) && (
+                    <div className="flex gap-2 mt-2 pt-2 border-t border-gray-100 animate-fade-in">
+                      {step.step_order === 1 && (<div className="flex-1"><label className="text-[10px] text-gray-400 font-medium block mb-0.5">วันที่เริ่มสัญญา/รับข้อมูล</label><input type="date" value={step.actual_start_date || ''} onChange={(e) => handleDateChange(step.id, 'actual_start_date', e.target.value)} className="w-full text-xs p-1.5 border border-gray-200 rounded text-gray-600 focus:border-blue-400 outline-none"/></div>)}
+                      {step.step_order === 7 && (<div className="flex-1"><label className="text-[10px] text-gray-400 font-medium block mb-0.5">วันที่ส่งงานจริง (จบงาน)</label><input type="date" value={step.actual_end_date || ''} onChange={(e) => handleDateChange(step.id, 'actual_end_date', e.target.value)} className="w-full text-xs p-1.5 border border-gray-200 rounded text-gray-600 focus:border-emerald-400 outline-none"/></div>)}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (<div className="text-center py-8 text-gray-400 bg-gray-50 rounded-xl border border-dashed border-gray-200"><XCircle size={32} className="mx-auto mb-2 opacity-50"/><p>ปิดการบันทึกความคืบหน้า<br/>เนื่องจากโครงการถูกยกเลิก</p></div>)}
+        </div>
+        <div className="px-6 py-4 bg-gray-50 border-t flex justify-end gap-3 shrink-0"><button onClick={onClose} className="btn-secondary">ยกเลิก</button><button onClick={handleSave} disabled={saving || (projectStatus === 'Cancelled' && !cancelReason)} className="btn-primary">{saving ? 'บันทึก...' : 'บันทึก'}</button></div>
+      </div>
+    </div>
+  );
+};
+
+const ProjectStepper = ({ steps, projectStatus }) => {
+  if (projectStatus === 'Cancelled') return <span className="text-gray-300 text-xs italic">Cancelled</span>;
+  if (!steps?.length) return <span className="text-gray-300">-</span>;
+  const sorted = [...steps].sort((a, b) => a.step_order - b.step_order);
+  return (
+    <div className="flex items-center justify-between w-full min-w-[200px]">
+      {sorted.map((s, i) => {
+        let cls = "w-4 h-4 rounded-full flex items-center justify-center text-[8px] border-2 font-bold relative transition-all ";
+        let line = "h-0.5 flex-1 mx-0.5 bg-gray-200 rounded-full";
+        if (s.status === 'completed') { cls += "bg-emerald-500 border-emerald-500 text-white"; line = "h-0.5 flex-1 mx-0.5 bg-emerald-500"; }
+        else if (s.status === 'current') { cls += "bg-white border-blue-500 text-blue-500 ring-2 ring-blue-100"; }
+        else { cls += "bg-white border-gray-200 text-gray-300"; }
+        return (<React.Fragment key={i}><div className="relative group flex flex-col items-center"><div className={cls}>{s.status === 'completed' ? <Check size={8} strokeWidth={4}/> : (i+1)}</div><div className="absolute bottom-full mb-1 hidden group-hover:block w-max max-w-[100px] text-center z-10 bg-gray-800 text-white text-[10px] p-1.5 rounded shadow-lg">{s.step_name}</div></div>{i < sorted.length - 1 && <div className={line}></div>}</React.Fragment>);
+      })}
+    </div>
+  );
+};
+
+// ==========================================
+// MAIN PAGE
+// ==========================================
+const DesignPage = ({ projects, onRefresh, kpiData }) => {
+  const [editingProject, setEditingProject] = useState(null);
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // 1. Calculate Unique Lists for Dropdowns
+  const uniqueLocations = useMemo(() => [...new Set(projects.map(p => p.location).filter(Boolean))].sort(), [projects]);
+  const uniqueOwners = useMemo(() => [...new Set(projects.map(p => p.owner).filter(Boolean))].sort(), [projects]);
+
+  const handleImportJSON = async () => {
+    if (!confirm(`ยืนยันการนำเข้าข้อมูลจำนวน ${projectsData.length} โครงการ?`)) return;
+    setIsImporting(true);
+    let successCount = 0;
+    for (const item of projectsData) { 
+      try {
+        const { data: projectData, error: projectError } = await supabase.from('projects').upsert([{ project_code: item.code, name: item.name, location: item.location, budget: parseFloat(item.budget || 0), responsible_design: item.owner, bu: item.bu }], { onConflict: 'project_code' }).select().single();
+        if (projectError) { console.error(projectError.message); continue; }
+        if (projectData && projectData.id) {
+            const { error: progressError } = await supabase.from('project_progress').upsert({ project_id: projectData.id, plan_start_date: convertDate(item.planStart), plan_end_date: convertDate(item.planEnd), performance_status: 'On Plan', percent_actual: 0 }, { onConflict: 'project_id' });
+            if (!progressError) successCount++;
+        }
+      } catch (err) { console.error(err); }
+    }
+    setIsImporting(false);
+    alert(`อัพเดตข้อมูลสำเร็จ ${successCount} จาก ${projectsData.length} รายการ`);
+    onRefresh();
+  };
+
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [filterOwner, setFilterOwner] = useState('');
+  const handleSort = (key) => setSortConfig({ key, direction: sortConfig.key === key && sortConfig.direction === 'asc' ? 'desc' : 'asc' });
+  const getSortIcon = (key) => sortConfig.key !== key ? <ArrowUpDown size={14} className="text-gray-300"/> : sortConfig.direction === 'asc' ? <ArrowUp size={14} className="text-emerald-600"/> : <ArrowDown size={14} className="text-emerald-600"/>;
+
+  const processedProjects = [...projects]
+    .filter(p => {
+      const matchOwner = !filterOwner || p.owner === filterOwner;
+      const query = searchQuery.toLowerCase().trim();
+      const matchSearch = !query || 
+        (p.name && p.name.toLowerCase().includes(query)) ||
+        (p.location && p.location.toLowerCase().includes(query)) ||
+        (p.project_code && p.project_code.toLowerCase().includes(query));
+      return matchOwner && matchSearch;
+    })
+    .sort((a, b) => {
+      if (!sortConfig.key) return 0;
+      const valA = a[sortConfig.key] || '', valB = b[sortConfig.key] || '';
+      return sortConfig.direction === 'asc' ? valA.toString().localeCompare(valB.toString(), 'th') : valB.toString().localeCompare(valA.toString(), 'th');
+    });
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <ProjectHealthCard projects={projects} />
+        <FinancialOverviewCard {...kpiData} />
+        <BUMixCard buData={kpiData.buData} />
+        <TeamRevenueCard teamData={kpiData.teamData} />
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-6 border-b border-gray-100 flex flex-col xl:flex-row justify-between items-center gap-4">
+           <h3 className="font-bold text-gray-800 flex items-center gap-2 whitespace-nowrap">
+             <FileText size={20} className="text-emerald-600" /> รายละเอียดโครงการ 
+             {filterOwner && <span className="text-gray-400 text-sm font-normal">({processedProjects.length})</span>}
+           </h3>
+           <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto">
+             <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
+                <input type="text" placeholder="ค้นหาชื่อ / สถานที่ / รหัส..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 pr-4 py-2 w-full border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all outline-none" />
+             </div>
+             <div className="relative w-full sm:w-auto"><Filter size={16} className="absolute left-3 top-3 text-gray-400" />
+               <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="pl-10 pr-8 py-2 w-full sm:w-auto border rounded-lg text-sm bg-white cursor-pointer hover:border-emerald-500 focus:ring-emerald-500 min-w-[180px]"><option value="">ทั้งหมด (All Owners)</option>{uniqueOwners.map(o => <option key={o} value={o}>{o}</option>)}</select>
+             </div>
+             <div className="flex gap-2 w-full sm:w-auto">
+               <button onClick={handleImportJSON} disabled={isImporting} className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-black text-sm font-medium flex items-center gap-2 disabled:opacity-50 justify-center flex-1 sm:flex-none">{isImporting ? '...' : <><Upload size={16}/> Import</>}</button>
+               <button onClick={() => setShowNewModal(true)} className="btn-primary flex items-center gap-2 whitespace-nowrap justify-center flex-1 sm:flex-none">+ Project</button>
+             </div>
+           </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[1200px]">
+            <thead>
+              <tr className="bg-gray-50/50 text-gray-500 text-xs uppercase font-semibold">
+                <th className="p-4 text-center w-[80px]">BU</th>
+                <th className="p-4 pl-6 cursor-pointer hover:bg-gray-100 w-[20%]" onClick={() => handleSort('name')}><div className="flex items-center gap-2">ชื่อโครงการ {getSortIcon('name')}</div></th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100 w-[10%]" onClick={() => handleSort('budget')}><div className="flex items-center gap-2">Budget {getSortIcon('budget')}</div></th>
+                <th className="p-4 text-right w-[10%]">Revenue (1.1%)</th>
+                <th className="p-4 text-center w-[15%]">Progress Trend</th>
+                <th className="p-4 text-center w-[20%]">Steps</th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100 w-[15%]" onClick={() => handleSort('owner')}><div className="flex items-center gap-2">ผู้รับผิดชอบ {getSortIcon('owner')}</div></th>
+                <th className="p-4 text-center w-[5%]">แก้ไข</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {processedProjects.length === 0 ? (<tr><td colSpan="8" className="p-8 text-center text-gray-400">ไม่พบข้อมูล</td></tr>) : (
+                processedProjects.map((p) => {
+                  const totalRevenue = p.budget * REVENUE_FACTOR; 
+                  const earnedRevenue = totalRevenue * (p.actualPercent / 100);
+                  const isCancelled = p.project_status === 'Cancelled';
+
+                  return (
+                    <tr key={p.id} className={`hover:bg-gray-50 transition-colors ${isCancelled ? 'bg-gray-50/50' : ''}`}>
+                      <td className="p-4 flex justify-center"><BUBadge buCode={p.bu} /></td>
+                      <td className="p-4 pl-6">
+                        <div className="flex items-center gap-2">{p.project_code && <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold">{p.project_code}</span>}<div className={`font-medium text-gray-800 line-clamp-1 ${isCancelled ? 'line-through text-gray-400' : ''}`} title={p.name}>{p.name}</div></div>
+                        <div className="text-xs text-gray-400 mt-1 flex gap-2"><span className="bg-gray-50 px-1.5 rounded flex items-center gap-1"><Calendar size={10}/> {p.startDate} - {p.endDate}</span></div>
+                        {isCancelled && p.cancel_reason && <div className="text-[10px] text-red-500 mt-1 flex gap-1 items-center"><Info size={10}/> ยกเลิก: {p.cancel_reason}</div>}
+                      </td>
+                      <td className="p-4 text-gray-700 font-mono font-medium">{(p.budget/1000000).toFixed(2)} M</td>
+                      
+                      <td className="p-4 text-right">
+                        <div className={`font-bold text-sm ${isCancelled ? 'text-gray-400' : 'text-emerald-600'}`}>
+                          ฿{earnedRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">Total: {totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                      </td>
+
+                      <td className="p-4 flex justify-center"><SegmentedProgress plan={p.planPercent} actual={p.actualPercent} status={p.status} delayDays={p.delayDays} projectStatus={p.project_status} /></td>
+                      <td className="p-4"><ProjectStepper steps={p.pipeline_steps} projectStatus={p.project_status} /></td>
+                      <td className="p-4 text-gray-600">
+                        <div className="flex items-center gap-2">
+                          <UserAvatar name={p.owner} size="sm" />
+                          <span className="truncate max-w-[100px]" title={p.owner}>{p.owner}</span>
+                        </div>
+                      </td>
+                      <td className="p-4 text-center"><button onClick={() => setEditingProject(p)} className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"><PenTool size={16} /></button></td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {editingProject && <ProjectEditModal project={editingProject} onClose={() => setEditingProject(null)} onUpdate={onRefresh} existingLocations={uniqueLocations} existingOwners={uniqueOwners} />}
+      {showNewModal && (
+        <NewProjectModal 
+          onClose={() => setShowNewModal(false)} 
+          onUpdate={onRefresh} 
+          existingLocations={uniqueLocations} 
+          existingOwners={uniqueOwners} 
+        />
+      )}
+    </div>
+  );
+};
+
+export default function App() {
+  const [page, setPage] = useState('design');
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { fetchRealData(); }, []);
+
+  async function fetchRealData() {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase.from('projects').select(`id, project_code, name, location, budget, responsible_design, bu, project_status, cancel_reason, project_progress (performance_status, plan_start_date, plan_end_date, actual_finish_date), design_pipeline_steps (id, step_name, step_order, status, actual_start_date, actual_end_date)`);
+      if (error) throw error;
+      if (data) {
+          setProjects(data.map(p => {
+             const progressObj = Array.isArray(p.project_progress) ? p.project_progress[0] : p.project_progress;
+             const statusData = calculateProjectStatus(progressObj, p.design_pipeline_steps, p.project_status);
+             return { id: p.id, project_code: p.project_code, name: p.name, location: p.location, budget: p.budget || 0, owner: p.responsible_design || 'Unassigned', bu: p.bu || 'OT', project_status: p.project_status || 'Active', cancel_reason: p.cancel_reason, pipeline_steps: p.design_pipeline_steps || [], ...statusData };
+          }));
+      }
+    } catch (error) { console.error(error); } finally { setLoading(false); }
+  }
+
+  const kpiData = useMemo(() => {
+    let totalBudget = 0;
+    let totalForecastRevenue = 0;
+    let actualRevenue = 0;
+    const buMap = {};
+    const teamMap = {};
+
+    projects.forEach(p => {
+        totalBudget += p.budget;
+        
+        if (p.project_status === 'Cancelled') return;
+
+        const totalProjRevenue = p.budget * REVENUE_FACTOR;
+        totalForecastRevenue += totalProjRevenue;
+        
+        const earnedRevenue = totalProjRevenue * (p.actualPercent / 100);
+        actualRevenue += earnedRevenue;
+
+        const buCode = p.bu || 'OT';
+        buMap[buCode] = (buMap[buCode] || 0) + earnedRevenue;
+
+        const owner = p.owner || 'Unassigned';
+        teamMap[owner] = (teamMap[owner] || 0) + earnedRevenue;
+    });
+
+    // คำนวณ totalActualRevenue สำหรับหา %
+    const totalActualRevenue = Object.values(buMap).reduce((sum, val) => sum + val, 0);
+
+    const buData = Object.entries(buMap)
+      .map(([code, revenue]) => ({ 
+          name: BU_CONFIG[code]?.label.split(' ')[0] || code, 
+          value: revenue,
+          percent: totalActualRevenue > 0 ? (revenue / totalActualRevenue) * 100 : 0 
+      }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 7);
+
+    const teamData = Object.entries(teamMap)
+      .map(([name, revenue]) => ({ name, revenue }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    return {
+      totalBudget,
+      totalForecastRevenue,
+      actualRevenue,
+      buData,
+      teamData
+    };
+  }, [projects]);
+
+
+  const SidebarItem = ({ icon, label, active, onClick }) => (
+    <div onClick={onClick} className={`flex items-center gap-3 px-4 py-3 mx-2 rounded-lg cursor-pointer transition-colors mb-1 ${active ? 'bg-emerald-50 text-emerald-700 font-medium border-l-4 border-emerald-600' : 'text-gray-500 hover:bg-gray-50'}`}>{icon}<span className="text-sm">{label}</span></div>
+  );
+
+  return (
+    <div className="flex min-h-screen bg-gray-50 font-sans text-gray-800">
+      <aside className="w-64 bg-white border-r flex-shrink-0 hidden md:flex flex-col fixed h-full z-20">
+        <div className="p-6 flex items-center gap-3"><div className="w-8 h-8 bg-emerald-600 rounded-lg flex justify-center items-center"><LayoutDashboard className="text-white" size={18}/></div><span className="font-bold text-lg">CIP Dashboard</span></div>
+        <nav className="flex-1 mt-6 space-y-1"><div className="px-6 mb-2 text-xs font-semibold text-gray-400">Main Menu</div><SidebarItem icon={<LayoutDashboard size={20}/>} label="Overview" active={page==='overview'} onClick={()=>setPage('overview')}/><SidebarItem icon={<PenTool size={20}/>} label="Design Monitoring" active={page==='design'} onClick={()=>setPage('design')}/></nav>
+      </aside>
+      <main className="flex-1 md:ml-64 p-4 md:p-8 overflow-y-auto">
+        {page === 'overview' && <div className="text-center py-20 text-gray-400">Overview Page (Coming Soon)</div>}
+        {page === 'design' && (
+          <DesignPage 
+            projects={projects} 
+            onRefresh={fetchRealData} 
+            kpiData={kpiData} 
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+const label = "block text-sm font-semibold text-gray-700 mb-1.5 ml-1";
+const inputFieldLg = "w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none";
+const btnPrimary = "px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-sm font-medium text-sm disabled:opacity-50 flex items-center gap-2 justify-center cursor-pointer";
+const btnSecondary = "px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors text-sm font-medium cursor-pointer";

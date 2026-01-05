@@ -1,0 +1,264 @@
+// src/pages/ContractPage.jsx
+import React, { useState } from 'react';
+import { 
+  FileSignature, DollarSign, Activity, CalendarClock, 
+  ChevronRight, MoreHorizontal, TrendingUp, AlertCircle, 
+  CheckCircle2, Clock, ScrollText, Wallet, Check, FolderOpen
+} from 'lucide-react';
+import { 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  Line, ComposedChart
+} from 'recharts';
+
+// --- 1. CONFIG: 5 Steps Workflow ---
+const CONTRACT_STEPS = [
+  { id: 1, label: 'รับเอกสารจากประมูล' },
+  { id: 2, label: 'ส่ง กก. ออกร่างสัญญา' }, // ย่อคำนิดหน่อยเพื่อให้พอดีช่อง
+  { id: 3, label: 'ผู้รับจ้างลงนาม' },
+  { id: 4, label: 'เสนอ กก. ลงนาม' },
+  { id: 5, label: 'สัญญาแล้วเสร็จ' }
+];
+
+// --- 2. MOCK DATA ---
+const CONTRACT_STATS = {
+  totalValue: 45000000,
+  totalBilled: 12500000,
+  retention: 625000,
+  remaining: 31875000
+};
+
+const S_CURVE_DATA = [
+  { month: 'Jan', plan: 5, actual: 5 },
+  { month: 'Feb', plan: 15, actual: 12 },
+  { month: 'Mar', plan: 30, actual: 28 },
+  { month: 'Apr', plan: 50, actual: 45 },
+  { month: 'May', plan: 70, actual: 55 },
+  { month: 'Jun', plan: 85, actual: null },
+  { month: 'Jul', plan: 95, actual: null },
+];
+
+// ข้อมูลสัญญาที่กำลังเดินเรื่อง (อยู่ใน 5 ขั้นตอน)
+const PENDING_CONTRACTS = [
+  { id: 'C-NEW-01', name: 'งานโครงสร้าง อาคาร C', currentStep: 2, contractor: 'ABC Con.', value: 15000000, startDate: '2023-11-01' },
+  { id: 'C-NEW-02', name: 'งานตกแต่งภายใน โซน 2', currentStep: 3, contractor: 'Interior Pro', value: 4500000, startDate: '2023-11-05' },
+  { id: 'C-NEW-03', name: 'งานระบบระบายอากาศ', currentStep: 4, contractor: 'Air System Ltd.', value: 8200000, startDate: '2023-10-25' },
+];
+
+// ข้อมูลสัญญาที่ Active แล้ว (ผ่านขั้นตอน 5 มาแล้ว)
+const ACTIVE_CONTRACTS = [
+  { id: 'C-001', name: 'งานปรับปรุงอาคาร A', progress: 45, status: 'Delay', value: 12000000, deadline: '2025-08-30' },
+  { id: 'C-002', name: 'งานระบบไฟฟ้า โรงงาน 2', progress: 78, status: 'On Plan', value: 8500000, deadline: '2025-06-15' },
+];
+
+// --- 3. COMPONENTS ---
+
+// 🟢 Financial Card
+const FinancialCard = ({ title, value, subtext, icon: Icon, theme }) => {
+  const styles = {
+    blue: "bg-blue-50 text-blue-600 border-blue-100",
+    emerald: "bg-emerald-50 text-emerald-600 border-emerald-100",
+    amber: "bg-amber-50 text-amber-600 border-amber-100",
+    purple: "bg-purple-50 text-purple-600 border-purple-100",
+  };
+  return (
+    <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-sm flex items-center justify-between group hover:shadow-md transition-all">
+      <div>
+        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">{title}</p>
+        <h3 className="text-2xl font-black text-slate-800 dark:text-white tracking-tight">฿{(value/1000000).toFixed(2)}M</h3>
+        <p className="text-[10px] text-gray-400 mt-1">{subtext}</p>
+      </div>
+      <div className={`p-3 rounded-xl ${styles[theme] || styles.blue} group-hover:scale-110 transition-transform`}>
+        <Icon size={20} strokeWidth={2.5} />
+      </div>
+    </div>
+  );
+};
+
+// 🟢 Contract Stepper (ตัวแสดงสถานะ 5 ขั้นตอน)
+const ContractStepper = ({ currentStep }) => {
+  return (
+    <div className="flex items-center w-full max-w-md">
+      {CONTRACT_STEPS.map((step, index) => {
+        const isCompleted = step.id <= currentStep;
+        const isCurrent = step.id === currentStep;
+        const isLast = index === CONTRACT_STEPS.length - 1;
+
+        return (
+          <div key={step.id} className="flex items-center flex-1 relative">
+            {/* Step Circle */}
+            <div 
+              className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold border-2 shrink-0 z-10 transition-all duration-300
+                ${isCompleted 
+                  ? 'bg-emerald-500 border-emerald-500 text-white' 
+                  : 'bg-white dark:bg-slate-800 border-gray-200 dark:border-slate-600 text-gray-300'
+                }
+                ${isCurrent ? 'ring-2 ring-emerald-200 dark:ring-emerald-900 scale-110' : ''}
+              `}
+              title={step.label}
+            >
+              {isCompleted ? <Check size={12} strokeWidth={3}/> : step.id}
+            </div>
+
+            {/* Connecting Line */}
+            {!isLast && (
+              <div className={`h-0.5 w-full mx-1 rounded-full transition-all duration-500 ${isCompleted && currentStep > step.id ? 'bg-emerald-500' : 'bg-gray-100 dark:bg-slate-700'}`}></div>
+            )}
+            
+            {/* Tooltip Label (เฉพาะขั้นตอนปัจจุบัน) */}
+            {isCurrent && (
+              <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] px-2 py-1 rounded shadow-lg whitespace-nowrap z-20">
+                {step.label}
+                <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// 🟢 Issuance Tracking Table (ตารางติดตามการออกสัญญา)
+const ContractIssuanceTable = () => {
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-slate-700 shadow-sm overflow-hidden col-span-1 lg:col-span-2">
+      <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+        <h3 className="font-bold text-gray-800 dark:text-white flex items-center gap-2">
+          <FolderOpen size={18} className="text-orange-500"/> สถานะการออกสัญญา (Contract Issuance)
+        </h3>
+        <span className="text-xs bg-orange-50 text-orange-600 px-2 py-1 rounded-full font-bold border border-orange-100">{PENDING_CONTRACTS.length} Pending</span>
+      </div>
+      
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-gray-50 dark:bg-slate-700/50 text-gray-500 text-xs uppercase font-semibold">
+            <tr>
+              <th className="p-4 pl-6">Project Name</th>
+              <th className="p-4">Contractor</th>
+              <th className="p-4 text-center w-[300px]">Process Status (5 Steps)</th>
+              <th className="p-4 text-right pr-6">Value</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+            {PENDING_CONTRACTS.map((contract) => (
+              <tr key={contract.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30 transition-colors">
+                <td className="p-4 pl-6">
+                  <div className="font-bold text-gray-800 dark:text-white">{contract.name}</div>
+                  <div className="text-[10px] text-gray-400">{contract.id} • Start: {contract.startDate}</div>
+                </td>
+                <td className="p-4 text-gray-600 dark:text-gray-300">{contract.contractor}</td>
+                <td className="p-4 flex justify-center">
+                  <ContractStepper currentStep={contract.currentStep} />
+                </td>
+                <td className="p-4 pr-6 text-right font-mono font-bold text-gray-700 dark:text-gray-300">
+                  {(contract.value/1000000).toFixed(2)}M
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// 🟢 Active Contracts & S-Curve
+const SCurveSection = () => {
+  return (
+    <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl border border-gray-100 dark:border-slate-700 shadow-sm h-full">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h3 className="font-bold text-gray-800 dark:text-white flex items-center gap-2">
+            <TrendingUp size={18} className="text-blue-500"/> S-Curve (Active Projects)
+          </h3>
+          <p className="text-xs text-gray-400 mt-1">Plan vs Actual Performance</p>
+        </div>
+      </div>
+      <div className="h-[250px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={S_CURVE_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+            <defs>
+              <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
+                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} />
+            <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} unit="%" />
+            <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/>
+            <Line type="monotone" dataKey="plan" stroke="#cbd5e1" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Plan" />
+            <Area type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorActual)" name="Actual" />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN PAGE ---
+const ContractPage = () => {
+  return (
+    <div className="space-y-6 pb-10 animate-fade-in">
+      
+      {/* 1. Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-black text-gray-800 dark:text-white flex items-center gap-2">
+            <FileSignature className="text-emerald-600"/> Contract Dashboard
+          </h2>
+          <p className="text-xs text-gray-400 mt-1">ติดตามสถานะสัญญาและการเบิกจ่าย</p>
+        </div>
+        <div className="flex gap-2">
+           <button className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-200 dark:shadow-none flex items-center gap-2">
+             <Wallet size={14}/> Request Payment
+           </button>
+        </div>
+      </div>
+
+      {/* 2. Financial Metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <FinancialCard title="Total Contract Value" value={CONTRACT_STATS.totalValue} subtext="มูลค่าสัญญาในมือ" icon={FileSignature} theme="blue" />
+        <FinancialCard title="Total Billed" value={CONTRACT_STATS.totalBilled} subtext="เบิกจ่ายแล้ว" icon={DollarSign} theme="emerald" />
+        <FinancialCard title="Retention (5%)" value={CONTRACT_STATS.retention} subtext="เงินประกันผลงาน" icon={Wallet} theme="amber" />
+        <FinancialCard title="Remaining" value={CONTRACT_STATS.remaining} subtext="มูลค่าคงเหลือ" icon={Activity} theme="purple" />
+      </div>
+
+      {/* 3. Main Grid (Issuance Table + S-Curve) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left: Contract Issuance Tracking (2/3 width) */}
+        <ContractIssuanceTable />
+        
+        {/* Right: S-Curve (1/3 width) */}
+        <SCurveSection />
+      </div>
+
+      {/* 4. Active Contracts List (Simple Table) */}
+      <div className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-slate-700 shadow-sm p-6">
+         <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2">
+            <ScrollText size={18} className="text-emerald-500"/> Active Contracts (Signed & Executing)
+         </h3>
+         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {ACTIVE_CONTRACTS.map((contract, i) => (
+                <div key={i} className="flex items-center gap-4 p-4 rounded-2xl bg-gray-50 dark:bg-slate-700/30 border border-gray-100 dark:border-slate-600">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xs font-bold ${contract.status === 'Delay' ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                        {contract.progress}%
+                    </div>
+                    <div>
+                        <h4 className="text-sm font-bold text-gray-700 dark:text-white">{contract.name}</h4>
+                        <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-1">
+                            <span>{contract.id}</span>
+                            <span>•</span>
+                            <span className={contract.status === 'Delay' ? 'text-red-500 font-bold' : 'text-emerald-500 font-bold'}>{contract.status}</span>
+                        </div>
+                    </div>
+                </div>
+            ))}
+         </div>
+      </div>
+
+    </div>
+  );
+};
+
+export default ContractPage;

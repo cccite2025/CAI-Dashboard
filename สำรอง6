@@ -1,0 +1,558 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from './supabaseClient';
+import {
+  LayoutDashboard, FileText, CheckCircle, Clock, TrendingUp, Bell, Settings, LogOut, Briefcase,
+  MoreVertical, ChevronRight, PenTool, AlertCircle, Check, Hourglass, ArrowUpDown, ArrowUp, ArrowDown, Filter, User, Calendar, 
+  Upload, Info, ChevronLeft, Search, Coins, XCircle, PauseCircle, PlayCircle // <--- เพิ่มไอคอนใหม่
+} from 'lucide-react';
+import {
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend
+} from 'recharts';
+import projectsData from './projects_data.json'; 
+
+// ==========================================
+// CONFIG
+// ==========================================
+const BU_CONFIG = {
+  'SW': { icon: '🐷', color: 'bg-pink-100 text-pink-600', label: 'สุกร (Swine)' },
+  'BR': { icon: '🐔', color: 'bg-orange-100 text-orange-600', label: 'ไก่เนื้อ (Broiler)' },
+  'LA': { icon: '🥚', color: 'bg-yellow-100 text-yellow-600', label: 'ไก่ไข่ (Layer)' },
+  'FE': { icon: '🌽', color: 'bg-emerald-100 text-emerald-600', label: 'อาหารสัตว์ (Feed)' },
+  'FO': { icon: '🍱', color: 'bg-purple-100 text-purple-600', label: 'อาหารสำเร็จ (Food)' },
+  'AQ': { icon: '🦐', color: 'bg-cyan-100 text-cyan-600', label: 'สัตว์น้ำ (Aqua)' },
+  'OT': { icon: '🏭', color: 'bg-gray-100 text-gray-600', label: 'อื่นๆ (Others)' },
+  'default': { icon: '❓', color: 'bg-gray-200 text-gray-500', label: 'Unknown' }
+};
+
+const WEIGHTS_BY_ORDER = {
+  1: 0, 2: 10, 3: 10, 4: 40, 5: 15, 6: 15, 7: 10
+};
+
+// ==========================================
+// LOGIC
+// ==========================================
+const calculateProjectStatus = (progressData, steps, projectStatus) => {
+  // ถ้าโครงการถูกยกเลิก ไม่ต้องคำนวณ Progress ให้เสียเวลา (หรือจะคำนวณก็ได้แต่แสดงผลอีกแบบ)
+  if (projectStatus === 'Cancelled') {
+    return { actualPercent: 0, planPercent: 0, status: 'Cancelled', delayDays: 0, startDate: '-', endDate: '-' };
+  }
+
+  const startDate = progressData?.plan_start_date ? new Date(progressData.plan_start_date) : null;
+  const endDate = progressData?.plan_end_date ? new Date(progressData.plan_end_date) : null;
+  const actualFinishDate = progressData?.actual_finish_date ? new Date(progressData.actual_finish_date) : null;
+  const today = new Date();
+
+  let actualPercent = 0;
+  if (steps && steps.length > 0) {
+    steps.forEach(step => {
+      if (step.status === 'completed') actualPercent += WEIGHTS_BY_ORDER[step.step_order] || 0;
+    });
+  }
+  actualPercent = Math.min(100, Math.round(actualPercent));
+
+  let planPercent = 0;
+  if (startDate && endDate) {
+    const totalDuration = endDate - startDate;
+    const compareDate = today; 
+    const elapsed = compareDate - startDate;
+    if (totalDuration > 0) planPercent = (elapsed / totalDuration) * 100;
+    planPercent = Math.max(0, Math.min(100, Math.round(planPercent)));
+  }
+
+  let status = 'On Plan';
+  if (planPercent - actualPercent > 5) status = 'Delay';
+  if (actualPercent >= 100) status = 'Completed';
+
+  // Override status ถ้าเป็น Hold
+  if (projectStatus === 'Hold') status = 'Hold';
+
+  let delayDays = 0;
+  if (endDate && projectStatus !== 'Hold') { // ถ้า Hold ไม่นับวัน Delay
+    if (status === 'Completed') {
+        if (actualFinishDate && actualFinishDate > endDate) {
+            const diffTime = Math.abs(actualFinishDate - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        } else if (!actualFinishDate && today > endDate) {
+            const diffTime = Math.abs(today - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+    } else {
+        if (today > endDate) {
+            const diffTime = Math.abs(today - endDate);
+            delayDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+    }
+  }
+
+  return {
+    actualPercent, planPercent, status, delayDays,
+    startDate: startDate ? startDate.toISOString().split('T')[0] : '-',
+    endDate: endDate ? endDate.toISOString().split('T')[0] : '-'
+  };
+};
+
+const convertDate = (dateStr) => {
+  if (!dateStr || dateStr === '-') return null;
+  try {
+    const parts = dateStr.split('/');
+    if (parts.length !== 3) return null;
+    const [day, month, year] = parts;
+    const pYear = year.length === 2 ? `20${year}` : year;
+    const pMonth = month.length === 1 ? `0${month}` : month;
+    const pDay = day.length === 1 ? `0${day}` : day;
+    return `${pYear}-${pMonth}-${pDay}`;
+  } catch (e) { return null; }
+};
+
+// ==========================================
+// COMPONENTS
+// ==========================================
+
+const SegmentedProgress = ({ plan, actual, status, delayDays, projectStatus }) => {
+  if (projectStatus === 'Cancelled') {
+    return <span className="text-xs text-gray-400 font-medium bg-gray-100 px-2 py-1 rounded-full">ยกเลิกโครงการ</span>;
+  }
+  if (projectStatus === 'Hold') {
+    return <span className="text-xs text-orange-500 font-medium bg-orange-100 px-2 py-1 rounded-full flex items-center gap-1 w-max mx-auto"><PauseCircle size={10}/> ชะลอโครงการ</span>;
+  }
+
+  const totalBars = 20; 
+  const activeBars = Math.round((actual / 100) * totalBars);
+  const isDelayed = delayDays > 0 || status === 'Delay';
+  const barColor = isDelayed ? 'bg-red-500' : 'bg-emerald-500';
+  const textColor = isDelayed ? 'text-red-600' : 'text-emerald-600';
+
+  return (
+    <div className="w-[120px] flex flex-col gap-1">
+      <div className="flex justify-between items-end mb-0.5">
+        <span className={`text-sm font-bold ${textColor}`}>{actual}%</span>
+        <span className="text-[9px] text-gray-400 font-mono">
+           {delayDays > 0 ? (
+             <span className="text-red-500 font-bold bg-red-50 px-1 rounded flex items-center gap-0.5">
+               {status === 'Completed' ? <CheckCircle size={8}/> : <Clock size={8}/>}
+               Late {delayDays}d
+             </span>
+           ) : (`Plan: ${plan}%`)}
+        </span>
+      </div>
+      <div className="flex gap-[2px] h-3 items-end">
+        {[...Array(totalBars)].map((_, index) => (
+          <div key={index} className={`w-full rounded-[1px] transition-all duration-300 ${index < activeBars ? `${barColor} h-full` : 'bg-gray-100 h-full'}`}></div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const BUBadge = ({ buCode }) => {
+  const config = BU_CONFIG[buCode] || BU_CONFIG['default'];
+  return (
+    <div className={`flex items-center justify-center w-9 h-9 rounded-xl ${config.color} shadow-sm group relative text-lg cursor-help`} >
+      {config.icon}
+      <div className="absolute bottom-full mb-2 hidden group-hover:block w-max max-w-[120px] text-center z-10 bg-gray-800 text-white text-xs p-2 rounded shadow-lg pointer-events-none whitespace-nowrap">
+        {config.label}
+      </div>
+    </div>
+  );
+};
+
+const NewProjectModal = ({ onClose, onUpdate }) => {
+  const [saving, setSaving] = useState(false);
+  const [formData, setFormData] = useState({ project_code: '', name: '', location: '', budget: '', responsible_design: '', bu: 'SW', plan_start_date: '', plan_end_date: '' });
+  const handleChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleSelectBU = (buCode) => setFormData(prev => ({ ...prev, bu: buCode }));
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!formData.project_code || !formData.name || !formData.budget || !formData.plan_start_date || !formData.plan_end_date) return alert('กรุณากรอกข้อมูลให้ครบ');
+    setSaving(true);
+    try {
+      const { data: projectData, error: projectError } = await supabase.from('projects').upsert([{ project_code: formData.project_code, name: formData.name, location: formData.location, budget: parseFloat(formData.budget), responsible_design: formData.responsible_design, bu: formData.bu }], { onConflict: 'project_code' }).select().single();
+      if (projectError) throw projectError;
+      const { error: progressError } = await supabase.from('project_progress').upsert({ project_id: projectData.id, plan_start_date: formData.plan_start_date, plan_end_date: formData.plan_end_date, performance_status: 'On Plan', percent_actual: 0 }, { onConflict: 'project_id' });
+      if (progressError) throw progressError;
+      onUpdate(); onClose();
+    } catch (error) { alert('Error: ' + error.message); } finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in p-4 font-sans">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="bg-white px-8 py-5 border-b border-gray-100 flex justify-between items-center shrink-0">
+          <div><h3 className="text-xl font-bold text-gray-800 flex items-center gap-2"><div className="p-2 bg-emerald-100 rounded-lg text-emerald-600"><Briefcase size={22} /></div>สร้างโครงการใหม่</h3><p className="text-sm text-gray-400 mt-1 ml-12">ระบุข้อมูลและระยะเวลาโครงการ</p></div><button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full text-gray-400 transition-colors">✕</button>
+        </div>
+        <div className="overflow-y-auto p-8 custom-scrollbar">
+          <form id="createProjectForm" onSubmit={handleSave} className="space-y-6">
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                 <div className="md:col-span-1"><label className="label">รหัสโครงการ *</label><input type="text" name="project_code" value={formData.project_code} onChange={handleChange} className="input-field-lg font-mono text-emerald-700 font-bold" required placeholder="เช่น C-2501" /></div>
+                 <div className="md:col-span-2"><label className="label">ชื่อโครงการ *</label><input type="text" name="name" value={formData.name} onChange={handleChange} className="input-field-lg" required placeholder="เช่น โรงเรือนสุกรขุน..." /></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="relative"><label className="label">งบประมาณ *</label><input type="number" name="budget" value={formData.budget} onChange={handleChange} className="input-field-lg pl-8 font-mono" required placeholder="0.00" /><span className="absolute left-3 top-9 text-gray-400">฿</span></div>
+                <div><label className="label">สถานที่ตั้ง</label><input type="text" name="location" value={formData.location} onChange={handleChange} className="input-field-lg" placeholder="ระบุสถานที่..." /></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5 bg-blue-50 p-4 rounded-xl border border-blue-100">
+                 <div><label className="label text-blue-800">วันที่เริ่มโครงการ *</label><input type="date" name="plan_start_date" value={formData.plan_start_date} onChange={handleChange} className="input-field-lg bg-white" required /></div>
+                 <div><label className="label text-blue-800">วันที่สิ้นสุด (ตามแผน) *</label><input type="date" name="plan_end_date" value={formData.plan_end_date} onChange={handleChange} className="input-field-lg bg-white" required /></div>
+              </div>
+            </div>
+            <hr className="border-gray-100 border-dashed" />
+            <div><label className="label">ประเภทธุรกิจ (BU)</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {Object.entries(BU_CONFIG).filter(([key]) => key !== 'default').map(([key, config]) => (
+                  <div key={key} onClick={() => handleSelectBU(key)} className={`cursor-pointer rounded-xl p-3 border transition-all flex flex-col items-center gap-2 text-center relative ${formData.bu === key ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-500 text-emerald-800' : 'border-gray-200 hover:border-emerald-300 hover:bg-gray-50 text-gray-600'}`}>
+                    <div className="text-2xl">{config.icon}</div><span className="text-xs font-medium">{config.label.split(' ')[0]}</span>
+                    {formData.bu === key && <div className="absolute top-1 right-1 text-emerald-500"><CheckCircle size={14} fill="currentColor" className="text-white"/></div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div><label className="label">ผู้รับผิดชอบ</label><div className="relative"><User className="absolute left-3 top-3.5 text-gray-400" size={18} /><input type="text" name="responsible_design" value={formData.responsible_design} onChange={handleChange} className="input-field-lg pl-10" placeholder="ชื่อผู้รับผิดชอบ..." /></div></div>
+          </form>
+        </div>
+        <div className="px-8 py-5 bg-gray-50 border-t border-gray-100 flex justify-end gap-3 shrink-0">
+          <button type="button" onClick={onClose} className="px-6 py-2.5 text-gray-600 hover:bg-gray-200 rounded-xl font-medium">ยกเลิก</button>
+          <button type="submit" form="createProjectForm" disabled={saving} className="px-8 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-medium disabled:opacity-70 flex items-center gap-2">{saving ? 'กำลังสร้าง...' : 'สร้างโครงการ'}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 🔴 ProjectEditModal (เพิ่มส่วนจัดการสถานะ Cancelled/Hold)
+const ProjectEditModal = ({ project, onClose, onUpdate }) => {
+  const [steps, setSteps] = useState([]);
+  // เพิ่ม State สำหรับสถานะหลัก
+  const [projectStatus, setProjectStatus] = useState(project.project_status || 'Active');
+  const [cancelReason, setCancelReason] = useState(project.cancel_reason || '');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { 
+    if (project?.pipeline_steps) setSteps([...project.pipeline_steps].sort((a, b) => a.step_order - b.step_order)); 
+  }, [project]);
+
+  const handleStatusChange = (id, status) => setSteps(prev => prev.map(s => s.id === id ? { ...s, status } : s));
+  
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // 1. Update Project Main Status & Reason (อัพเดตตาราง projects)
+      const { error: projError } = await supabase
+        .from('projects')
+        .update({ 
+          project_status: projectStatus,
+          cancel_reason: projectStatus === 'Cancelled' ? cancelReason : null // ล้างเหตุผลถ้าไม่ได้ยกเลิก
+        })
+        .eq('id', project.id);
+      
+      if (projError) throw projError;
+
+      // 2. Update Steps (ถ้าไม่ได้ยกเลิก ถึงจะอัพเดต steps)
+      if (projectStatus !== 'Cancelled') {
+        const { error } = await supabase.from('design_pipeline_steps').upsert(steps.map(s => ({ ...s, project_id: project.id })));
+        if (error) throw error;
+        
+        // คำนวณ Progress
+        let currentActual = 0;
+        steps.forEach(s => { if (s.status === 'completed') currentActual += WEIGHTS_BY_ORDER[s.step_order] || 0; });
+        currentActual = Math.min(100, Math.round(currentActual));
+        
+        const updatePayload = { percent_actual: currentActual };
+        if (currentActual >= 100) {
+           updatePayload.actual_finish_date = new Date().toISOString();
+           updatePayload.performance_status = 'Completed';
+        } else {
+           updatePayload.actual_finish_date = null;
+           updatePayload.performance_status = 'In Progress'; 
+        }
+        await supabase.from('project_progress').update(updatePayload).eq('project_id', project.id);
+      }
+
+      onUpdate(); onClose();
+    } catch (error) { alert('Error: ' + error.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="bg-gray-50 px-6 py-4 border-b flex justify-between"><div><h3 className="font-bold">อัพเดตสถานะ</h3><p className="text-sm text-gray-500">{project.name}</p></div><button onClick={onClose}>✕</button></div>
+        
+        <div className="p-6 overflow-y-auto space-y-6">
+          
+          {/* ส่วนเลือกสถานะโครงการ (Active / Hold / Cancel) */}
+          <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
+             <label className="text-sm font-semibold text-gray-700">สถานะโครงการ</label>
+             <div className="grid grid-cols-3 gap-2">
+                <button 
+                  onClick={() => setProjectStatus('Active')}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Active' ? 'bg-emerald-100 text-emerald-700 border border-emerald-300 ring-1 ring-emerald-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  <PlayCircle size={16}/> ปกติ
+                </button>
+                <button 
+                  onClick={() => setProjectStatus('Hold')}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Hold' ? 'bg-orange-100 text-orange-700 border border-orange-300 ring-1 ring-orange-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  <PauseCircle size={16}/> ชะลอ
+                </button>
+                <button 
+                  onClick={() => setProjectStatus('Cancelled')}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${projectStatus === 'Cancelled' ? 'bg-red-100 text-red-700 border border-red-300 ring-1 ring-red-500' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  <XCircle size={16}/> ยกเลิก
+                </button>
+             </div>
+
+             {/* ช่องกรอกเหตุผล (แสดงเฉพาะตอนเลือก Cancel) */}
+             {projectStatus === 'Cancelled' && (
+               <div className="animate-fade-in mt-2">
+                 <label className="text-xs font-semibold text-red-600 mb-1 block">ระบุเหตุผลที่ยกเลิก *</label>
+                 <textarea 
+                   className="w-full p-3 border border-red-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none" 
+                   rows="2"
+                   placeholder="เช่น เจ้าของระงับงบประมาณ, เปลี่ยนแผนการผลิต..."
+                   value={cancelReason}
+                   onChange={(e) => setCancelReason(e.target.value)}
+                 ></textarea>
+               </div>
+             )}
+          </div>
+
+          <hr className="border-gray-100" />
+
+          {/* รายการ Steps (ซ่อนถ้ายกเลิก) */}
+          {projectStatus !== 'Cancelled' ? (
+            <div className="space-y-4">
+              <h4 className="text-sm font-semibold text-gray-700">ความคืบหน้างานออกแบบ</h4>
+              {steps.map(step => (
+                <div key={step.id} className="flex justify-between p-3 bg-white rounded-lg border border-gray-200 items-center hover:border-blue-300 transition-colors">
+                  <div className="flex gap-3 items-center">
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${step.status === 'completed' ? 'bg-emerald-500 text-white' : step.status === 'current' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-500'}`}>{step.step_order}</div>
+                    <div className="flex flex-col"><span className="font-medium text-sm text-gray-700">{step.step_name}</span><span className="text-[10px] text-gray-400">Weight: {WEIGHTS_BY_ORDER[step.step_order]}%</span></div>
+                  </div>
+                  <select value={step.status} onChange={(e) => handleStatusChange(step.id, e.target.value)} className="text-sm border-none rounded p-1 font-medium cursor-pointer bg-gray-50 shadow-sm ring-1 ring-gray-200"><option value="pending">รอ</option><option value="current">กำลังทำ</option><option value="completed">เสร็จ</option></select>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+              <XCircle size={32} className="mx-auto mb-2 opacity-50"/>
+              <p>ปิดการบันทึกความคืบหน้า<br/>เนื่องจากโครงการถูกยกเลิก</p>
+            </div>
+          )}
+
+        </div>
+        <div className="px-6 py-4 bg-gray-50 border-t flex justify-end gap-3 shrink-0"><button onClick={onClose} className="btn-secondary">ยกเลิก</button><button onClick={handleSave} disabled={saving || (projectStatus === 'Cancelled' && !cancelReason)} className="btn-primary">{saving ? 'บันทึก...' : 'บันทึก'}</button></div>
+      </div>
+    </div>
+  );
+};
+
+const KPICard = ({ title, value, icon, subtext, color = "emerald" }) => (
+  <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between h-full hover:shadow-md transition-shadow">
+    <div className="flex justify-between items-start mb-4"><div className={`p-3 bg-${color}-50 rounded-xl text-${color}-600`}>{icon}</div></div>
+    <div><h3 className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-1">{title}</h3><span className="text-2xl font-bold text-gray-800">{value}</span>{subtext && <p className="text-xs text-gray-400 mt-1">{subtext}</p>}</div>
+  </div>
+);
+
+const ProjectStepper = ({ steps, projectStatus }) => {
+  if (projectStatus === 'Cancelled') return <span className="text-gray-300 text-xs italic">Cancelled</span>;
+  if (!steps?.length) return <span className="text-gray-300">-</span>;
+  const sorted = [...steps].sort((a, b) => a.step_order - b.step_order);
+  return (
+    <div className="flex items-center justify-between w-full min-w-[200px]">
+      {sorted.map((s, i) => {
+        let cls = "w-4 h-4 rounded-full flex items-center justify-center text-[8px] border-2 font-bold relative transition-all ";
+        let line = "h-0.5 flex-1 mx-0.5 bg-gray-200 rounded-full";
+        if (s.status === 'completed') { cls += "bg-emerald-500 border-emerald-500 text-white"; line = "h-0.5 flex-1 mx-0.5 bg-emerald-500"; }
+        else if (s.status === 'current') { cls += "bg-white border-blue-500 text-blue-500 ring-2 ring-blue-100"; }
+        else { cls += "bg-white border-gray-200 text-gray-300"; }
+        return (<React.Fragment key={i}><div className="relative group flex flex-col items-center"><div className={cls}>{s.status === 'completed' ? <Check size={8} strokeWidth={4}/> : (i+1)}</div><div className="absolute bottom-full mb-1 hidden group-hover:block w-max max-w-[100px] text-center z-10 bg-gray-800 text-white text-[10px] p-1.5 rounded shadow-lg">{s.step_name}</div></div>{i < sorted.length - 1 && <div className={line}></div>}</React.Fragment>);
+      })}
+    </div>
+  );
+};
+
+// ==========================================
+// MAIN PAGE
+// ==========================================
+const DesignPage = ({ projects, onRefresh }) => {
+  const [editingProject, setEditingProject] = useState(null);
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const handleImportJSON = async () => {
+    if (!confirm(`ยืนยันการนำเข้าข้อมูลจำนวน ${projectsData.length} โครงการ?`)) return;
+    setIsImporting(true);
+    let successCount = 0;
+    let firstError = null;
+    for (const item of projectsData) { 
+      try {
+        const { data: projectData, error: projectError } = await supabase.from('projects').upsert([{ project_code: item.code, name: item.name, location: item.location, budget: parseFloat(item.budget || 0), responsible_design: item.owner, bu: item.bu }], { onConflict: 'project_code' }).select().single();
+        if (projectError) { if(!firstError) firstError = projectError.message; console.error(projectError.message); continue; }
+        if (projectData && projectData.id) {
+            const { error: progressError } = await supabase.from('project_progress').upsert({ project_id: projectData.id, plan_start_date: convertDate(item.planStart), plan_end_date: convertDate(item.planEnd), performance_status: 'On Plan', percent_actual: 0 }, { onConflict: 'project_id' });
+            if (!progressError) successCount++;
+        }
+      } catch (err) { console.error(err); }
+    }
+    setIsImporting(false);
+    alert(`อัพเดตข้อมูลสำเร็จ ${successCount} จาก ${projectsData.length} รายการ`);
+    onRefresh();
+  };
+
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [filterOwner, setFilterOwner] = useState('');
+  const uniqueOwners = [...new Set(projects.map(p => p.owner).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'th'));
+  const handleSort = (key) => setSortConfig({ key, direction: sortConfig.key === key && sortConfig.direction === 'asc' ? 'desc' : 'asc' });
+  const getSortIcon = (key) => sortConfig.key !== key ? <ArrowUpDown size={14} className="text-gray-300"/> : sortConfig.direction === 'asc' ? <ArrowUp size={14} className="text-emerald-600"/> : <ArrowDown size={14} className="text-emerald-600"/>;
+
+  const processedProjects = [...projects]
+    .filter(p => {
+      const matchOwner = !filterOwner || p.owner === filterOwner;
+      const query = searchQuery.toLowerCase().trim();
+      const matchSearch = !query || 
+        (p.name && p.name.toLowerCase().includes(query)) ||
+        (p.location && p.location.toLowerCase().includes(query)) ||
+        (p.project_code && p.project_code.toLowerCase().includes(query));
+      return matchOwner && matchSearch;
+    })
+    .sort((a, b) => {
+      if (!sortConfig.key) return 0;
+      const valA = a[sortConfig.key] || '', valB = b[sortConfig.key] || '';
+      return sortConfig.direction === 'asc' ? valA.toString().localeCompare(valB.toString(), 'th') : valB.toString().localeCompare(valA.toString(), 'th');
+    });
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+         <KPICard title="โครงการทั้งหมด" value={projects.length} icon={<Briefcase size={20}/>} subtext="Active Projects" />
+         <KPICard title="งบประมาณรวม" value={`${(projects.reduce((sum, p) => sum + p.budget, 0) / 1000000).toFixed(1)} M`} icon={<TrendingUp size={20}/>} color="blue" subtext="THB" />
+         <KPICard title="โครงการล่าช้า (Delay)" value={projects.filter(p => p.status === 'Delay').length} icon={<AlertCircle size={20}/>} color="red" subtext="Action Needed!" />
+         <KPICard title="On Plan" value={projects.filter(p => p.status !== 'Delay').length} icon={<CheckCircle size={20}/>} color="emerald" subtext="Good Status" />
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-6 border-b border-gray-100 flex flex-col xl:flex-row justify-between items-center gap-4">
+           <h3 className="font-bold text-gray-800 flex items-center gap-2 whitespace-nowrap">
+             <FileText size={20} className="text-emerald-600" /> รายละเอียดโครงการ 
+             {filterOwner && <span className="text-gray-400 text-sm font-normal">({processedProjects.length})</span>}
+           </h3>
+           <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto">
+             <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
+                <input type="text" placeholder="ค้นหาชื่อ / สถานที่ / รหัส..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 pr-4 py-2 w-full border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all outline-none" />
+             </div>
+             <div className="relative w-full sm:w-auto"><Filter size={16} className="absolute left-3 top-3 text-gray-400" />
+               <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="pl-10 pr-8 py-2 w-full sm:w-auto border rounded-lg text-sm bg-white cursor-pointer hover:border-emerald-500 focus:ring-emerald-500 min-w-[180px]"><option value="">ทั้งหมด (All Owners)</option>{uniqueOwners.map(o => <option key={o} value={o}>{o}</option>)}</select>
+             </div>
+             <div className="flex gap-2 w-full sm:w-auto">
+               <button onClick={handleImportJSON} disabled={isImporting} className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-black text-sm font-medium flex items-center gap-2 disabled:opacity-50 justify-center flex-1 sm:flex-none">{isImporting ? '...' : <><Upload size={16}/> Import</>}</button>
+               <button onClick={() => setShowNewModal(true)} className="btn-primary flex items-center gap-2 whitespace-nowrap justify-center flex-1 sm:flex-none">+ Project</button>
+             </div>
+           </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[1200px]">
+            <thead>
+              <tr className="bg-gray-50/50 text-gray-500 text-xs uppercase font-semibold">
+                <th className="p-4 text-center w-[80px]">BU</th>
+                <th className="p-4 pl-6 cursor-pointer hover:bg-gray-100 w-[20%]" onClick={() => handleSort('name')}><div className="flex items-center gap-2">ชื่อโครงการ {getSortIcon('name')}</div></th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100 w-[10%]" onClick={() => handleSort('budget')}><div className="flex items-center gap-2">Budget {getSortIcon('budget')}</div></th>
+                <th className="p-4 text-right w-[10%]">Revenue (1.1%)</th>
+                <th className="p-4 text-center w-[15%]">Progress Trend</th>
+                <th className="p-4 text-center w-[20%]">Steps</th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100 w-[15%]" onClick={() => handleSort('owner')}><div className="flex items-center gap-2">ผู้รับผิดชอบ {getSortIcon('owner')}</div></th>
+                <th className="p-4 text-center w-[5%]">แก้ไข</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {processedProjects.length === 0 ? (<tr><td colSpan="8" className="p-8 text-center text-gray-400">ไม่พบข้อมูล</td></tr>) : (
+                processedProjects.map((p) => {
+                  const totalRevenue = p.budget * 0.011; 
+                  const earnedRevenue = totalRevenue * (p.actualPercent / 100);
+                  // ถ้า Cancelled ให้รายได้เป็น 0 หรือเป็นสีเทา (ในที่นี้ให้เป็นสีเทา และหยุดคิดเพิ่ม)
+                  const isCancelled = p.project_status === 'Cancelled';
+
+                  return (
+                    <tr key={p.id} className={`hover:bg-gray-50 transition-colors ${isCancelled ? 'bg-gray-50/50' : ''}`}>
+                      <td className="p-4 flex justify-center"><BUBadge buCode={p.bu} /></td>
+                      <td className="p-4 pl-6">
+                        <div className="flex items-center gap-2">
+                          {p.project_code && <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold">{p.project_code}</span>}
+                          {/* ชื่อโครงการ ถ้า Cancel ขีดฆ่า */}
+                          <div className={`font-medium text-gray-800 line-clamp-1 ${isCancelled ? 'line-through text-gray-400' : ''}`} title={p.name}>{p.name}</div>
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1 flex gap-2"><span className="bg-gray-50 px-1.5 rounded flex items-center gap-1"><Calendar size={10}/> {p.startDate} - {p.endDate}</span></div>
+                        {/* แสดงเหตุผลที่ยกเลิกใต้ชื่อ */}
+                        {isCancelled && p.cancel_reason && <div className="text-[10px] text-red-500 mt-1 flex gap-1 items-center"><Info size={10}/> ยกเลิก: {p.cancel_reason}</div>}
+                      </td>
+                      <td className="p-4 text-gray-700 font-mono font-medium">{(p.budget/1000000).toFixed(2)} M</td>
+                      
+                      <td className="p-4 text-right">
+                        <div className={`font-bold text-sm ${isCancelled ? 'text-gray-400' : 'text-emerald-600'}`}>
+                          ฿{earnedRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">Total: {totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                      </td>
+
+                      <td className="p-4 flex justify-center"><SegmentedProgress plan={p.planPercent} actual={p.actualPercent} status={p.status} delayDays={p.delayDays} projectStatus={p.project_status} /></td>
+                      <td className="p-4"><ProjectStepper steps={p.pipeline_steps} projectStatus={p.project_status} /></td>
+                      <td className="p-4 text-gray-600"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-bold border border-blue-100">{p.owner.charAt(0)}</div><span className="truncate max-w-[100px]" title={p.owner}>{p.owner}</span></div></td>
+                      <td className="p-4 text-center"><button onClick={() => setEditingProject(p)} className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"><PenTool size={16} /></button></td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {editingProject && <ProjectEditModal project={editingProject} onClose={() => setEditingProject(null)} onUpdate={onRefresh} />}
+      {showNewModal && <NewProjectModal onClose={() => setShowNewModal(false)} onUpdate={onRefresh} />}
+    </div>
+  );
+};
+
+export default function App() {
+  const [page, setPage] = useState('design');
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { fetchRealData(); }, []);
+  async function fetchRealData() {
+    try {
+      setLoading(true);
+      // Fetch เพิ่ม project_status และ cancel_reason
+      const { data, error } = await supabase.from('projects').select(`id, project_code, name, location, budget, responsible_design, bu, project_status, cancel_reason, project_progress (performance_status, plan_start_date, plan_end_date, actual_finish_date), design_pipeline_steps (id, step_name, step_order, status)`);
+      if (error) throw error;
+      if (data) {
+          setProjects(data.map(p => {
+             const progressObj = Array.isArray(p.project_progress) ? p.project_progress[0] : p.project_progress;
+             const statusData = calculateProjectStatus(progressObj, p.design_pipeline_steps, p.project_status);
+             return { id: p.id, project_code: p.project_code, name: p.name, location: p.location, budget: p.budget || 0, owner: p.responsible_design || 'Unassigned', bu: p.bu || 'OT', project_status: p.project_status || 'Active', cancel_reason: p.cancel_reason, pipeline_steps: p.design_pipeline_steps || [], ...statusData };
+          }));
+      }
+    } catch (error) { console.error(error); } finally { setLoading(false); }
+  }
+  const SidebarItem = ({ icon, label, active, onClick }) => (
+    <div onClick={onClick} className={`flex items-center gap-3 px-4 py-3 mx-2 rounded-lg cursor-pointer transition-colors mb-1 ${active ? 'bg-emerald-50 text-emerald-700 font-medium border-l-4 border-emerald-600' : 'text-gray-500 hover:bg-gray-50'}`}>{icon}<span className="text-sm">{label}</span></div>
+  );
+  return (
+    <div className="flex min-h-screen bg-gray-50 font-sans text-gray-800">
+      <aside className="w-64 bg-white border-r flex-shrink-0 hidden md:flex flex-col fixed h-full z-20">
+        <div className="p-6 flex items-center gap-3"><div className="w-8 h-8 bg-emerald-600 rounded-lg flex justify-center items-center"><LayoutDashboard className="text-white" size={18}/></div><span className="font-bold text-lg">CIP Dashboard</span></div>
+        <nav className="flex-1 mt-6 space-y-1"><div className="px-6 mb-2 text-xs font-semibold text-gray-400">Main Menu</div><SidebarItem icon={<LayoutDashboard size={20}/>} label="Overview" active={page==='overview'} onClick={()=>setPage('overview')}/><SidebarItem icon={<PenTool size={20}/>} label="Design Monitoring" active={page==='design'} onClick={()=>setPage('design')}/></nav>
+      </aside>
+      <main className="flex-1 md:ml-64 p-4 md:p-8 overflow-y-auto">
+        {page === 'overview' && <div className="text-center py-20 text-gray-400">Overview Page (Coming Soon)</div>}
+        {page === 'design' && <DesignPage projects={projects} onRefresh={fetchRealData} />}
+      </main>
+    </div>
+  );
+}
+
+const label = "block text-sm font-semibold text-gray-700 mb-1.5 ml-1";
+const inputFieldLg = "w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none";
+const btnPrimary = "px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-sm font-medium text-sm disabled:opacity-50 flex items-center gap-2 justify-center cursor-pointer";
+const btnSecondary = "px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors text-sm font-medium cursor-pointer";

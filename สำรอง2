@@ -1,0 +1,442 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from './supabaseClient';
+import { 
+  LayoutDashboard, 
+  FileText, 
+  CheckCircle, 
+  Clock, 
+  TrendingUp,
+  Bell,
+  Settings,
+  LogOut,
+  Briefcase,
+  MoreVertical,
+  ChevronRight,
+  PenTool,
+  AlertCircle,
+  Check,
+  Hourglass,
+  ArrowUpDown, 
+  ArrowUp, 
+  ArrowDown,
+  Filter,
+  User
+} from 'lucide-react';
+import { 
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend
+} from 'recharts';
+
+// ==========================================
+// ส่วนที่ 1: Components ย่อย (Modal & Cards)
+// ==========================================
+
+// 1.1 Modal สร้างโครงการใหม่
+const NewProjectModal = ({ onClose, onUpdate }) => {
+  const [saving, setSaving] = useState(false);
+  const [formData, setFormData] = useState({
+    name: '',
+    location: '',
+    budget: '',
+    responsible_design: '',
+    bu: 'SW'
+  });
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!formData.name || !formData.budget) {
+      alert('กรุณากรอกชื่อโครงการและงบประมาณ');
+      return;
+    }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('projects').insert([{
+        ...formData,
+        budget: parseFloat(formData.budget),
+      }]);
+      if (error) throw error;
+      onUpdate();
+      onClose();
+    } catch (error) {
+      alert('Error: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden">
+        <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+            <Briefcase size={20} className="text-emerald-600" /> สร้างโครงการใหม่
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <form onSubmit={handleSave}>
+          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">ชื่อโครงการ *</label>
+              <input type="text" name="name" value={formData.name} onChange={handleChange} className="w-full p-2.5 border rounded-lg" required />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สถานที่ตั้ง</label>
+              <input type="text" name="location" value={formData.location} onChange={handleChange} className="w-full p-2.5 border rounded-lg" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">งบประมาณ (บาท) *</label>
+              <input type="number" name="budget" value={formData.budget} onChange={handleChange} className="w-full p-2.5 border rounded-lg" required step="0.01" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ผู้รับผิดชอบออกแบบ</label>
+              <input type="text" name="responsible_design" value={formData.responsible_design} onChange={handleChange} className="w-full p-2.5 border rounded-lg" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Business Unit (BU)</label>
+              <select name="bu" value={formData.bu} onChange={handleChange} className="w-full p-2.5 border rounded-lg bg-white">
+                <option value="SW">SW (สุกร)</option>
+                <option value="BR">BR (ไก่เนื้อ)</option>
+                <option value="LA">LA (ไก่ไข่)</option>
+                <option value="FE">FE (อาหารสัตว์)</option>
+                <option value="FO">FO (อาหารสำเร็จ)</option>
+                <option value="AQ">AQ (สัตว์น้ำ)</option>
+                <option value="OT">OT (อื่นๆ)</option>
+              </select>
+            </div>
+          </div>
+          <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg">ยกเลิก</button>
+            <button type="submit" disabled={saving} className="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">
+              {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// 1.2 Modal แก้ไขสถานะ
+const ProjectEditModal = ({ project, onClose, onUpdate }) => {
+  const [steps, setSteps] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (project && project.pipeline_steps) {
+      const sortedSteps = [...project.pipeline_steps].sort((a, b) => (a.step_order || 0) - (b.step_order || 0));
+      setSteps(sortedSteps);
+    }
+  }, [project]);
+
+  const handleStatusChange = (stepId, newStatus) => {
+    setSteps(prev => prev.map(s => s.id === stepId ? { ...s, status: newStatus } : s));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const updates = steps.map(s => ({
+        id: s.id,
+        project_id: project.id,
+        step_name: s.step_name,
+        step_order: s.step_order,
+        status: s.status
+      }));
+      const { error } = await supabase.from('design_pipeline_steps').upsert(updates);
+      if (error) throw error;
+      onUpdate();
+      onClose();
+    } catch (error) {
+      alert('Error: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+        <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+          <div><h3 className="text-lg font-bold text-gray-800">อัพเดตสถานะ</h3><p className="text-sm text-gray-500">{project.name}</p></div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
+          {steps.map((step) => (
+            <div key={step.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border">
+              <div className="flex items-center gap-3">
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
+                  ${step.status === 'completed' ? 'bg-emerald-500 text-white' : step.status === 'current' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                  {step.step_order}
+                </div>
+                <span className="font-medium text-gray-700">{step.step_name}</span>
+              </div>
+              <select value={step.status} onChange={(e) => handleStatusChange(step.id, e.target.value)}
+                className={`text-sm border-none rounded-md py-1 px-3 font-medium cursor-pointer
+                  ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'current' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600'}`}>
+                <option value="pending">รอการดำเนินงาน</option>
+                <option value="current">กำลังดำเนินการ</option>
+                <option value="completed">เสร็จสิ้น</option>
+              </select>
+            </div>
+          ))}
+        </div>
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg">ยกเลิก</button>
+          <button onClick={handleSave} disabled={saving} className="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">
+            {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 1.3 Components ทั่วไป
+const KPICard = ({ title, value, icon }) => (
+  <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between h-full hover:shadow-md transition-shadow">
+    <div className="flex justify-between items-start mb-4">
+      <div className="p-3 bg-emerald-50 rounded-xl">{icon}</div>
+    </div>
+    <div>
+      <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-1">{title}</h3>
+      <span className="text-2xl font-bold text-gray-800">{value}</span>
+    </div>
+  </div>
+);
+
+const ProjectStepper = ({ steps }) => {
+  if (!steps || steps.length === 0) return <span className="text-gray-400 text-xs">-</span>;
+  const sortedSteps = [...steps].sort((a, b) => (a.step_order || 0) - (b.step_order || 0));
+  return (
+    <div className="flex items-center justify-between w-full min-w-[300px]">
+      {sortedSteps.map((step, index) => {
+        let circleClass = "w-5 h-5 rounded-full flex items-center justify-center text-[9px] border-2 font-bold relative ";
+        let lineClass = "h-0.5 flex-1 mx-0.5 bg-gray-200";
+        if (step.status === 'completed') {
+          circleClass += " bg-emerald-500 border-emerald-500 text-white";
+          lineClass = "h-0.5 flex-1 mx-0.5 bg-emerald-500";
+        } else if (step.status === 'current') {
+           circleClass += " bg-white border-blue-500 text-blue-500";
+        } else {
+          circleClass += " bg-white border-gray-200 text-gray-300";
+        }
+        return (
+          <React.Fragment key={index}>
+            <div className="relative group flex flex-col items-center">
+              <div className={circleClass} title={step.step_name}>
+                {step.status === 'completed' ? <Check size={10} strokeWidth={4} /> : (index + 1)}
+              </div>
+              <div className="absolute bottom-full mb-1 hidden group-hover:block w-max max-w-[100px] text-center z-10 bg-gray-800 text-white text-[10px] p-1 rounded">
+                {step.step_name}
+              </div>
+            </div>
+            {index < sortedSteps.length - 1 && <div className={lineClass}></div>}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+};
+
+// ==========================================
+// ส่วนที่ 2: หน้า DESIGN (รวม Sort & Filter)
+// ==========================================
+const DesignPage = ({ projects, onRefresh }) => {
+  const [editingProject, setEditingProject] = useState(null);
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [filterOwner, setFilterOwner] = useState('');
+
+  const uniqueOwners = [...new Set(projects.map(p => p.owner).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'th'));
+
+  const handleSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key) => {
+    if (sortConfig.key !== key) return <ArrowUpDown size={14} className="text-gray-300" />;
+    return sortConfig.direction === 'asc' ? <ArrowUp size={14} className="text-emerald-600" /> : <ArrowDown size={14} className="text-emerald-600" />;
+  };
+
+  const processedProjects = [...projects]
+    .filter(project => !filterOwner || project.owner === filterOwner)
+    .sort((a, b) => {
+      if (!sortConfig.key) return 0;
+      const valA = a[sortConfig.key] || '';
+      const valB = b[sortConfig.key] || '';
+      return sortConfig.direction === 'asc' 
+        ? valA.toString().localeCompare(valB.toString(), 'th') 
+        : valB.toString().localeCompare(valA.toString(), 'th');
+    });
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+         <KPICard title="จำนวนโครงการ" value={projects.length} icon={<Briefcase className="text-emerald-600"/>} />
+         <KPICard title="งบประมาณรวม" value={`${(projects.reduce((sum, p) => sum + p.budget, 0) / 1000000).toFixed(1)} M`} icon={<TrendingUp className="text-blue-600"/>} />
+         <KPICard title="โครงการล่าช้า" value={projects.filter(p => p.status === 'Delay').length} icon={<AlertCircle className="text-rose-600"/>} />
+         <KPICard title="On Plan" value={projects.filter(p => p.status !== 'Delay').length} icon={<CheckCircle className="text-emerald-600"/>} />
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-center gap-4">
+           <h3 className="font-bold text-gray-800 flex items-center gap-2">
+             <FileText size={20} className="text-emerald-600" /> รายละเอียด {filterOwner && <span className="text-gray-400 text-sm">({processedProjects.length})</span>}
+           </h3>
+           <div className="flex items-center gap-3 w-full sm:w-auto">
+             <div className="relative">
+                <Filter size={16} className="absolute left-3 top-3 text-gray-400" />
+                <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)}
+                  className="pl-10 pr-8 py-2 border border-gray-200 rounded-lg text-sm bg-white cursor-pointer hover:border-emerald-500 focus:ring-emerald-500 min-w-[200px]">
+                  <option value="">ทั้งหมด (All Owners)</option>
+                  {uniqueOwners.map(owner => <option key={owner} value={owner}>{owner}</option>)}
+                </select>
+             </div>
+             <button onClick={() => setShowNewProjectModal(true)}
+               className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 shadow-sm text-sm font-medium whitespace-nowrap">
+               + New Project
+             </button>
+           </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[1000px]">
+            <thead>
+              <tr className="bg-gray-50/50 text-gray-500 text-xs uppercase font-semibold">
+                <th className="p-4 pl-6 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('name')}>
+                  <div className="flex items-center gap-2">ชื่อโครงการ {getSortIcon('name')}</div>
+                </th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('budget')}>
+                  <div className="flex items-center gap-2">Budget (MB) {getSortIcon('budget')}</div>
+                </th>
+                <th className="p-4 text-center">สถานะ (Pipeline)</th>
+                <th className="p-4 cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('owner')}>
+                  <div className="flex items-center gap-2">ผู้รับผิดชอบ {getSortIcon('owner')}</div>
+                </th>
+                <th className="p-4 text-center">แก้ไข</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {processedProjects.length === 0 ? (
+                 <tr><td colSpan="5" className="p-8 text-center text-gray-400">ไม่พบข้อมูล</td></tr>
+              ) : (
+                processedProjects.map((project) => (
+                  <tr key={project.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="p-4 pl-6">
+                        <div className="font-medium text-gray-700">{project.name}</div>
+                        <div className="text-xs text-gray-400">{project.location}</div>
+                    </td>
+                    <td className="p-4 text-gray-700 font-mono">{(project.budget/1000000).toFixed(2)}</td>
+                    <td className="p-4"><ProjectStepper steps={project.pipeline_steps} /></td>
+                    <td className="p-4 text-gray-600">
+                        <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">{project.owner.charAt(0)}</div>
+                            {project.owner}
+                        </div>
+                    </td>
+                    <td className="p-4 text-center">
+                      <button onClick={() => setEditingProject(project)}
+                        className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all">
+                        <PenTool size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      {/* Modals */}
+      {editingProject && <ProjectEditModal project={editingProject} onClose={() => setEditingProject(null)} onUpdate={onRefresh} />}
+      {showNewProjectModal && <NewProjectModal onClose={() => setShowNewProjectModal(false)} onUpdate={onRefresh} />}
+    </div>
+  );
+};
+
+// ==========================================
+// ส่วนที่ 3: MAIN APP
+// ==========================================
+export default function App() {
+  const [currentPage, setCurrentPage] = useState('design');
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { fetchRealData(); }, []);
+
+  async function fetchRealData() {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase.from('projects').select(`
+          id, name, location, budget, responsible_design, bu,
+          project_progress (performance_status),
+          design_pipeline_steps (id, step_name, step_order, status)
+      `);
+      if (error) throw error;
+      if (data) {
+          const formattedData = data.map(p => {
+            const progressData = Array.isArray(p.project_progress) ? p.project_progress[0] : p.project_progress;
+            return {
+                id: p.id,
+                name: p.name,
+                location: p.location,
+                budget: p.budget || 0,
+                owner: p.responsible_design || 'Unassigned',
+                status: progressData?.performance_status || 'Not Start',
+                pipeline_steps: p.design_pipeline_steps || [] 
+            };
+          });
+          setProjects(formattedData);
+      }
+    } catch (error) {
+      console.error('Error:', error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Sidebar Item
+  const SidebarItem = ({ icon, label, active, onClick }) => (
+    <div onClick={onClick} className={`flex items-center gap-3 px-4 py-3 mx-2 rounded-lg cursor-pointer transition-colors mb-1
+      ${active ? 'bg-emerald-50 text-emerald-700 font-medium border-l-4 border-emerald-600' : 'text-gray-500 hover:bg-gray-50'}`}>
+      {icon}<span className="text-sm">{label}</span>
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-screen bg-gray-50 font-sans text-gray-800">
+      <aside className="w-64 bg-white border-r border-gray-100 flex-shrink-0 hidden md:flex flex-col fixed h-full z-20">
+        <div className="p-6 flex items-center gap-3">
+          <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center"><LayoutDashboard className="text-white" size={18} /></div>
+          <span className="font-bold text-lg text-gray-800 tracking-tight">CIP Dashboard</span>
+        </div>
+        <nav className="flex-1 mt-6 space-y-1">
+          <div className="px-6 mb-2 text-xs font-semibold text-gray-400 uppercase">Main Menu</div>
+          <SidebarItem icon={<LayoutDashboard size={20} />} label="Overview" active={currentPage === 'overview'} onClick={() => setCurrentPage('overview')} />
+          <SidebarItem icon={<Briefcase size={20} />} label="Projects" />
+          <SidebarItem icon={<PenTool size={20} />} label="Design Monitoring" active={currentPage === 'design'} onClick={() => setCurrentPage('design')} />
+        </nav>
+        <div className="p-4 border-t border-gray-100">
+          <div className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer">
+             <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold text-xs">AD</div>
+             <div className="flex-1"><div className="text-sm font-medium">Admin User</div></div>
+             <LogOut size={16} className="text-gray-400" />
+          </div>
+        </div>
+      </aside>
+
+      <main className="flex-1 md:ml-64 p-4 md:p-8 overflow-y-auto">
+        {currentPage === 'overview' && <div className="text-center py-20 text-gray-400">Overview Page (ยังไม่ได้ใส่ข้อมูล)</div>}
+        {currentPage === 'design' && <DesignPage projects={projects} onRefresh={fetchRealData} />}
+      </main>
+    </div>
+  );
+}
