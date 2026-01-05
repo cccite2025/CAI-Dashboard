@@ -1,0 +1,256 @@
+// src/pages/DesignPage.jsx
+import React, { useState, useMemo } from 'react';
+import { supabase } from '../supabaseClient';
+import { 
+  FileText, Search, Filter, Upload, Layout, GanttChartSquare, 
+  ArrowUpDown, ArrowUp, ArrowDown, Calendar, Info, PenTool 
+} from 'lucide-react'; // 🟢 (ไม่ต้องเพิ่ม icon ซ้ำ)
+import projectsData from '../projects_data.json';
+import { REVENUE_FACTOR, convertDate } from '../utils';
+import { 
+  ProjectHealthCard, FinancialOverviewCard, BUMixCard, TeamRevenueCard,
+  ProjectKanbanBoard, ProjectGanttView, NewProjectModal, ProjectEditModal,
+  BUBadge, SegmentedProgress, ProjectStepper, UserAvatar,
+  StepCompletionModal // ✅ 1. เพิ่ม Import Modal ตัวใหม่เข้ามา
+} from '../components/ProjectComponents';
+
+export const DesignPage = ({ projects, onRefresh, kpiData }) => {
+  const [editingProject, setEditingProject] = useState(null);
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [viewMode, setViewMode] = useState('list');
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [filterOwner, setFilterOwner] = useState('');
+
+  // ✅ 2. เพิ่ม State สำหรับเก็บ Step ที่ถูกคลิก
+  const [selectedStepToUpdate, setSelectedStepToUpdate] = useState(null);
+
+  const uniqueLocations = useMemo(() => [...new Set(projects.map(p => p.location).filter(Boolean))].sort(), [projects]);
+  const uniqueOwners = useMemo(() => [...new Set(projects.map(p => p.owner).filter(Boolean))].sort(), [projects]);
+
+  // ฟังก์ชัน Import (เหมือนเดิม)
+  const handleImportJSON = async () => {
+    if (!confirm(`ยืนยันการนำเข้าข้อมูลจำนวน ${projectsData.length} โครงการ?`)) return;
+    setIsImporting(true);
+    let successCount = 0;
+    for (const item of projectsData) { 
+      try {
+        const { data: projectData, error: projectError } = await supabase.from('projects').upsert([{ project_code: item.code, name: item.name, location: item.location, budget: parseFloat(item.budget || 0), responsible_design: item.owner, bu: item.bu }], { onConflict: 'project_code' }).select().single();
+        if (projectError) continue;
+        if (projectData && projectData.id) {
+            const { error: progressError } = await supabase.from('project_progress').upsert({ project_id: projectData.id, plan_start_date: convertDate(item.planStart), plan_end_date: convertDate(item.planEnd), performance_status: 'On Plan', percent_actual: 0 }, { onConflict: 'project_id' });
+            if (!progressError) successCount++;
+        }
+      } catch (err) { console.error(err); }
+    }
+    setIsImporting(false);
+    alert(`อัพเดตข้อมูลสำเร็จ ${successCount} รายการ`);
+    onRefresh();
+  };
+
+// ใน src/pages/DesignPage.jsx
+
+const handleStepComplete = async (stepId, startDate, endDate) => {
+  try {
+      // 1. หา Project ID ของ Step นี้
+      const { data: currentStep } = await supabase
+          .from('design_pipeline_steps')
+          .select('project_id')
+          .eq('id', stepId)
+          .single();
+
+      if (!currentStep) throw new Error("ไม่พบข้อมูลขั้นตอน");
+
+      // 2. เอาวันเริ่ม (startDate) ไปยัดใส่ Step 1
+      await supabase
+          .from('design_pipeline_steps')
+          .update({ 
+              status: 'completed', 
+              actual_start_date: startDate 
+              // ❌ ลบ updated_at ออกแล้ว
+          })
+          .eq('project_id', currentStep.project_id)
+          .eq('step_order', 1);
+
+      // 3. เอาวันจบ (endDate) ไปยัดใส่ Step 7 (ตัวมันเอง)
+      await supabase
+          .from('design_pipeline_steps')
+          .update({ 
+              status: 'completed', 
+              actual_end_date: endDate
+              // ❌ ลบ updated_at ออกแล้ว
+          })
+          .eq('id', stepId);
+
+      // 4. เปลี่ยนสถานะ Project เป็น Completed
+      await supabase
+          .from('projects')
+          .update({ status: 'Completed', project_status: 'Completed' })
+          .eq('id', currentStep.project_id);
+
+      alert("🎉 ปิดจบโครงการเรียบร้อย!");
+      setSelectedStepToUpdate(null);
+      onRefresh();
+
+  } catch (err) {
+      alert("❌ เกิดข้อผิดพลาด: " + err.message);
+  }
+};
+  const handleSort = (key) => setSortConfig({ key, direction: sortConfig.key === key && sortConfig.direction === 'asc' ? 'desc' : 'asc' });
+  const getSortIcon = (key) => sortConfig.key !== key ? <ArrowUpDown size={14} className="text-gray-300"/> : sortConfig.direction === 'asc' ? <ArrowUp size={14} className="text-emerald-600"/> : <ArrowDown size={14} className="text-emerald-600"/>;
+
+  const processedProjects = [...projects].filter(p => {
+      const matchOwner = !filterOwner || p.owner === filterOwner;
+      const query = searchQuery.toLowerCase().trim();
+      const matchSearch = !query || (p.name && p.name.toLowerCase().includes(query)) || (p.project_code && p.project_code.toLowerCase().includes(query));
+      return matchOwner && matchSearch;
+    }).sort((a, b) => {
+      if (!sortConfig.key) return 0;
+      const valA = a[sortConfig.key] || '', valB = b[sortConfig.key] || '';
+      return sortConfig.direction === 'asc' ? valA.toString().localeCompare(valB.toString(), 'th') : valB.toString().localeCompare(valA.toString(), 'th');
+    });
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <ProjectHealthCard projects={projects} />
+        <FinancialOverviewCard {...kpiData} />
+        <BUMixCard buData={kpiData.buData} />
+        <TeamRevenueCard teamData={kpiData.teamData} />
+      </div>
+
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden transition-colors duration-300">
+        <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex flex-col xl:flex-row justify-between items-center gap-4">
+           <div className="flex items-center gap-4">
+             <h3 className="font-bold text-gray-800 dark:text-white flex items-center gap-2 whitespace-nowrap">
+               <FileText size={20} className="text-emerald-600 dark:text-emerald-400" /> รายละเอียดโครงการ 
+               {filterOwner && <span className="text-gray-400 dark:text-gray-500 text-sm font-normal">({processedProjects.length})</span>}
+             </h3>
+             <div className="flex bg-gray-100 dark:bg-slate-700 p-1 rounded-lg">
+                <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-white dark:bg-slate-600 text-emerald-600 dark:text-emerald-400 shadow-sm' : 'text-gray-400 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'}`}><FileText size={16} /></button>
+                <button onClick={() => setViewMode('board')} className={`p-1.5 rounded-md transition-all ${viewMode === 'board' ? 'bg-white dark:bg-slate-600 text-emerald-600 dark:text-emerald-400 shadow-sm' : 'text-gray-400 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'}`}><Layout size={16} /></button>
+                <button onClick={() => setViewMode('gantt')} className={`p-1.5 rounded-md transition-all ${viewMode === 'gantt' ? 'bg-white dark:bg-slate-600 text-emerald-600 dark:text-emerald-400 shadow-sm' : 'text-gray-400 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'}`}><GanttChartSquare size={16} /></button>
+             </div>
+           </div>
+           
+           <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto">
+             <div className="relative w-full sm:w-64">
+               <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
+               <input type="text" placeholder="ค้นหาชื่อ / รหัส..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 pr-4 py-2 w-full border border-gray-200 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none placeholder:text-gray-300 dark:placeholder:text-gray-500" />
+             </div>
+             <div className="relative w-full sm:w-auto">
+               <Filter size={16} className="absolute left-3 top-3 text-gray-400" />
+               <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="pl-10 pr-8 py-2 w-full sm:w-auto border border-gray-200 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 cursor-pointer min-w-[180px] focus:ring-emerald-500 outline-none">
+                 <option value="">ทั้งหมด (All Owners)</option>
+                 {uniqueOwners.map(o => <option key={o} value={o}>{o}</option>)}
+               </select>
+             </div>
+             <div className="flex gap-2 w-full sm:w-auto">
+               <button onClick={handleImportJSON} disabled={isImporting} className="bg-gray-800 dark:bg-slate-700 text-white px-4 py-2 rounded-lg hover:bg-black dark:hover:bg-slate-600 text-sm font-medium flex items-center gap-2 flex-1 justify-center transition-colors">{isImporting ? '...' : <><Upload size={16}/> Import</>}</button>
+               <button onClick={() => setShowNewModal(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 text-sm font-medium flex items-center gap-2 flex-1 justify-center shadow-lg shadow-emerald-200 dark:shadow-none transition-transform active:scale-95">+ Project</button>
+             </div>
+           </div>
+        </div>
+
+        {viewMode === 'list' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[1200px]">
+              <thead>
+                <tr className="bg-gray-50/50 dark:bg-slate-700/50 text-gray-500 dark:text-gray-400 text-xs uppercase font-semibold">
+                  <th className="p-4 text-center">BU</th>
+                  <th className="p-4 pl-6 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700" onClick={() => handleSort('name')}>ชื่อโครงการ {getSortIcon('name')}</th>
+                  <th className="p-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700" onClick={() => handleSort('budget')}>Budget {getSortIcon('budget')}</th>
+                  <th className="p-4 text-right">Revenue</th>
+                  <th className="p-4 text-center">Progress</th>
+                  <th className="p-4 text-center">Steps</th>
+                  <th className="p-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-700" onClick={() => handleSort('owner')}>ผู้รับผิดชอบ</th>
+                  <th className="p-4 text-center">แก้ไข</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                {processedProjects.map((p) => {
+                    const earnedRevenue = (p.budget * REVENUE_FACTOR) * (p.actualPercent / 100);
+                    const isCancelled = p.project_status === 'Cancelled';
+                    return (
+                      <tr key={p.id} className={`hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors ${isCancelled ? 'bg-gray-50/50 dark:bg-slate-800/50' : ''}`}>
+                        <td className="p-4 flex justify-center"><BUBadge buCode={p.bu} /></td>
+                        <td className="p-4 pl-6">
+                          <div className="flex items-center gap-2">
+                            {p.project_code && <span className="bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold">{p.project_code}</span>}
+                            <div className={`font-medium ${isCancelled ? 'line-through text-gray-400' : 'text-gray-800 dark:text-gray-200'}`}>{p.name}</div>
+                          </div>
+                          <div className="text-xs text-gray-400 mt-1 flex gap-2"><span className="bg-gray-50 dark:bg-slate-700 px-1.5 rounded flex items-center gap-1"><Calendar size={10}/> {p.startDate} - {p.endDate}</span></div>
+                          {isCancelled && p.cancel_reason && <div className="text-[10px] text-red-500 mt-1 flex gap-1 items-center"><Info size={10}/> {p.cancel_reason}</div>}
+                        </td>
+                        <td className="p-4 text-gray-700 dark:text-gray-300 font-mono font-medium">{(p.budget/1000000).toFixed(2)} M</td>
+                        <td className="p-4 text-right"><div className={`font-bold text-sm ${isCancelled ? 'text-gray-400' : 'text-emerald-600 dark:text-emerald-400'}`}>฿{earnedRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></td>
+                        <td className="p-4 flex justify-center"><SegmentedProgress plan={p.planPercent} actual={p.actualPercent} status={p.status} delayDays={p.delayDays} projectStatus={p.project_status} /></td>
+
+<td className="p-4">
+    <ProjectStepper 
+    steps={p.pipeline_steps} 
+    projectStatus={p.project_status} 
+    onStepClick={async (step) => {
+        if (step.step_order === 7) {
+            // ถ้าเป็นขั้นตอนสุดท้าย -> เปิด Modal
+            setSelectedStepToUpdate(step);
+        } else {
+            // ถ้าเป็นขั้นตอน 1-6 -> อัปเดตเงียบๆ
+            if(!confirm(`ยืนยันการจบขั้นตอน "${step.step_name}"?`)) return;
+
+            try {
+                const { error } = await supabase
+                    .from('design_pipeline_steps')
+                    .update({
+                        status: 'completed'
+                        // ❌ ลบ updated_at ออกแล้ว กัน Error
+                    })
+                    .eq('id', step.id);
+
+                if (error) throw error;
+                onRefresh();
+            } catch (err) {
+                alert("Error: " + err.message);
+            }
+        }
+    }} 
+/>
+</td>
+
+                        <td className="p-4 text-gray-600 dark:text-gray-400">
+                          <div className="flex items-center gap-2">
+                            <UserAvatar name={p.owner} size="sm" />
+                            <span className="truncate max-w-[100px]">{p.owner}</span>
+                          </div>
+                        </td>
+                        <td className="p-4 text-center"><button onClick={() => setEditingProject(p)} className="p-2 text-gray-400 dark:text-gray-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors"><PenTool size={16} /></button></td>
+                      </tr>
+                    );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : viewMode === 'board' ? (
+          <ProjectKanbanBoard projects={processedProjects} onEdit={setEditingProject} />
+        ) : (
+          <ProjectGanttView projects={processedProjects} />
+        )}
+      </div>
+      
+      {/* Modals */}
+      {editingProject && <ProjectEditModal project={editingProject} onClose={() => setEditingProject(null)} onUpdate={onRefresh} existingLocations={uniqueLocations} existingOwners={uniqueOwners} />}
+      {showNewModal && <NewProjectModal onClose={() => setShowNewModal(false)} onUpdate={onRefresh} existingLocations={uniqueLocations} existingOwners={uniqueOwners} />}
+      
+      {/* ✅ 5. วาง Modal ตัวใหม่ไว้ล่างสุด */}
+      {selectedStepToUpdate && (
+         <StepCompletionModal 
+            step={selectedStepToUpdate}
+            onClose={() => setSelectedStepToUpdate(null)}
+            onConfirm={handleStepComplete}
+         />
+      )}
+
+    </div>
+  );
+};
